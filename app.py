@@ -258,20 +258,32 @@ def render_setup():
         "after importing the XML."
     )
 
+    # fps_int derived from selected fps (needed for frame caps below)
+    fps_int = srt2xml.FPS_PRESETS[fps]["fps_int"]
+
     # ----- A camera SRT alignment -----
     st.markdown("**📍 逐字稿從 A 機影片的第幾秒開始？**")
-    a_srt_starts_at_col, a_srt_unit_col = st.columns([3, 1])
-    with a_srt_starts_at_col:
-        a_srt_starts_at = st.number_input(
-            "Source second when SRT cue 1 begins",
-            value=0.0, step=0.5, min_value=0.0,
-            help="If SRT was auto-transcribed from this A source (e.g. Whisper), "
-                 "leave 0. Otherwise enter the second-mark in source video where speech begins.",
+    st.caption("If SRT was auto-transcribed from this A source (e.g. Whisper), "
+               "leave 0s 0f. Otherwise enter where speech begins in A camera "
+               "(e.g. 13min pre-roll → enter `828` seconds + `47` frames).")
+    a1, a2, a3, a4 = st.columns([3, 1, 3, 1])
+    with a1:
+        a_srt_starts_seconds = st.number_input(
+            "A srt starts seconds", min_value=0, value=0, step=1,
             label_visibility="collapsed",
         )
-    with a_srt_unit_col:
+    with a2:
         st.markdown("&nbsp;")
         st.markdown("**seconds**")
+    with a3:
+        a_srt_starts_frames = st.number_input(
+            "A srt starts frames", min_value=0, max_value=fps_int - 1,
+            value=0, step=1,
+            label_visibility="collapsed",
+        )
+    with a4:
+        st.markdown("&nbsp;")
+        st.markdown(f"**frames** (0–{fps_int - 1})")
 
     multicam_enabled = st.checkbox(
         "➕ Add Camera B (multicam / dual-camera setup)",
@@ -293,12 +305,13 @@ def render_setup():
             st.markdown("**seconds**")
         with bd_f_col:
             b_delay_frames = st.number_input(
-                "B delay frames", min_value=0, value=0, step=1,
+                "B delay frames", min_value=0, max_value=fps_int - 1,
+                value=0, step=1,
                 label_visibility="collapsed",
             )
         with bd_f_unit:
             st.markdown("&nbsp;")
-            st.markdown("**frames**")
+            st.markdown(f"**frames** (0–{fps_int - 1})")
         st.caption("Direction: B started LATER than A (shorter pre-roll). "
                    "Eyeball-estimate from a clap/hand-gesture visible in both cameras.")
 
@@ -373,7 +386,9 @@ def render_setup():
             "audio_depth": int(audio_depth),
             "audio_channels": int(audio_channels),
             "a_path": a_path,
-            "a_srt_starts_at": float(a_srt_starts_at),
+            "a_srt_starts_at": (
+                float(a_srt_starts_seconds) + float(a_srt_starts_frames) / fps_int
+            ),
             "multicam_enabled": multicam_enabled and mode == "highlight",
             "b_path": b_path,
             "b_delay_seconds": int(b_delay_seconds),
