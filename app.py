@@ -238,25 +238,49 @@ def render_setup():
 
         st.divider()
 
-        st.subheader("🎥 Camera A (required)")
-        ca1, ca2 = st.columns(2)
-        with ca1: a_path = st.text_input("A source path", "<<RELINK>>",
-            help="Absolute path or `<<RELINK>>` placeholder.")
-        with ca2: a_tc = st.text_input("A anchor source TC", "00:00:00:00",
-            help="Source TC at the moment SRT cue 1 starts.")
-        a_srt_at = st.number_input("A anchor srt_at (seconds, usually 1.0)",
-            value=1.0, step=0.1)
+        st.subheader("🎥 Cameras")
+        st.caption(
+            "Source video files don't need paths here — re-link them in Premiere "
+            "after importing the XML."
+        )
 
-        st.divider()
+        multicam_enabled = st.checkbox(
+            "➕ Add Camera B (multicam / dual-camera setup)",
+            help="Required for highlight mode A/B switching. Sequential mode is single-cam.",
+        )
 
-        st.subheader("🎥 Camera B (optional, for multicam highlight only)")
-        multicam_enabled = st.checkbox("➕ Add Camera B")
-        b_path = "<<RELINK>>"; b_delay = "0s0f"
+        b_delay = "0s0f"
         if multicam_enabled:
-            cb1, cb2 = st.columns(2)
-            with cb1: b_path = st.text_input("B source path", "<<RELINK>>")
-            with cb2: b_delay = st.text_input("B delay from A", "0s0f",
-                help="e.g. '54s29f' / '54.5' / '00:00:54:29'")
+            b_delay = st.text_input(
+                "⏱️ B delay from A — how much later B camera started recording",
+                "0s0f",
+                help="Format: '54s29f' = 54 sec 29 frames · '54.5' = decimal sec · "
+                     "'00:00:54:29' = TC. Direction: B started LATER than A.",
+            )
+
+        with st.expander(
+            "⚙️ Advanced: SRT-to-source alignment "
+            "(only if your SRT timestamps don't match source video timing)"
+        ):
+            st.markdown(
+                "**If your SRT was auto-transcribed from this source video** "
+                "(e.g. via Whisper), the timestamps already align — leave the defaults.\n\n"
+                "**Otherwise** set the source TC reading at the moment SRT cue 1 starts. "
+                "Example: source video records 13 min of pre-roll before speech begins, "
+                "and SRT cue 1 starts at SRT 1.0s; you'd set "
+                "`source_tc = 00:13:48:47`, `srt_at = 1.0`."
+            )
+            ca1, ca2 = st.columns(2)
+            with ca1:
+                a_tc = st.text_input("A anchor source TC", "00:00:00:00")
+            with ca2:
+                a_srt_at = st.number_input(
+                    "A anchor srt_at (seconds)", value=0.0, step=0.1
+                )
+
+        # Hardcode placeholder paths — user will re-link in Premiere.
+        a_path = "<<RELINK>>"
+        b_path = "<<RELINK>>"
 
         st.divider()
 
