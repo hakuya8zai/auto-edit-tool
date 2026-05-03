@@ -258,39 +258,49 @@ def render_setup():
         "after importing the XML."
     )
 
+    # ----- A camera SRT alignment -----
+    st.markdown("**📍 逐字稿從 A 機影片的第幾秒開始？**")
+    a_srt_starts_at_col, a_srt_unit_col = st.columns([3, 1])
+    with a_srt_starts_at_col:
+        a_srt_starts_at = st.number_input(
+            "Source second when SRT cue 1 begins",
+            value=0.0, step=0.5, min_value=0.0,
+            help="If SRT was auto-transcribed from this A source (e.g. Whisper), "
+                 "leave 0. Otherwise enter the second-mark in source video where speech begins.",
+            label_visibility="collapsed",
+        )
+    with a_srt_unit_col:
+        st.markdown("&nbsp;")
+        st.markdown("**seconds**")
+
     multicam_enabled = st.checkbox(
         "➕ Add Camera B (multicam / dual-camera setup)",
         help="Required for highlight mode A/B switching. Sequential mode is single-cam.",
     )
 
-    b_delay = "0s0f"
+    b_delay_seconds = 0
+    b_delay_frames = 0
     if multicam_enabled:
-        b_delay = st.text_input(
-            "⏱️ B delay from A — how much later B camera started recording",
-            "0s0f",
-            help="Format: '54s29f' = 54 sec 29 frames · '54.5' = decimal sec · "
-                 "'00:00:54:29' = TC. Direction: B started LATER than A.",
-        )
-
-    with st.expander(
-        "⚙️ Advanced: SRT-to-source alignment "
-        "(only if your SRT timestamps don't match source video timing)"
-    ):
-        st.markdown(
-            "**If your SRT was auto-transcribed from this source video** "
-            "(e.g. via Whisper), the timestamps already align — leave the defaults.\n\n"
-            "**Otherwise** set the source TC reading at the moment SRT cue 1 starts. "
-            "Example: source video records 13 min of pre-roll before speech begins, "
-            "and SRT cue 1 starts at SRT 1.0s; you'd set "
-            "`source_tc = 00:13:48:47`, `srt_at = 1.0`."
-        )
-        ca1, ca2 = st.columns(2)
-        with ca1:
-            a_tc = st.text_input("A anchor source TC", "00:00:00:00")
-        with ca2:
-            a_srt_at = st.number_input(
-                "A anchor srt_at (seconds)", value=0.0, step=0.1
+        st.markdown("**⏱️ B 比 A 晚開機多久？**")
+        bd_s_col, bd_s_unit, bd_f_col, bd_f_unit = st.columns([3, 1, 3, 1])
+        with bd_s_col:
+            b_delay_seconds = st.number_input(
+                "B delay seconds", min_value=0, value=0, step=1,
+                label_visibility="collapsed",
             )
+        with bd_s_unit:
+            st.markdown("&nbsp;")
+            st.markdown("**seconds**")
+        with bd_f_col:
+            b_delay_frames = st.number_input(
+                "B delay frames", min_value=0, value=0, step=1,
+                label_visibility="collapsed",
+            )
+        with bd_f_unit:
+            st.markdown("&nbsp;")
+            st.markdown("**frames**")
+        st.caption("Direction: B started LATER than A (shorter pre-roll). "
+                   "Eyeball-estimate from a clap/hand-gesture visible in both cameras.")
 
     # Hardcoded placeholder paths — user will re-link in Premiere.
     a_path = "<<RELINK>>"
@@ -300,13 +310,32 @@ def render_setup():
 
     # ----- Output -----
     st.subheader("⏱️ Output")
-    co1, co2 = st.columns(2)
-    with co1:
-        target_duration = st.text_input("Target duration", "60s",
-            help="60 / '60s' / '1min' / '1.5min' / '1h30min' / '1:30'")
-    with co2:
-        padding = st.number_input("Padding (seconds)",
-            value=0.5, step=0.1, min_value=0.0)
+
+    st.markdown("**Target duration**")
+    td_n_col, td_u_col = st.columns([3, 1])
+    with td_n_col:
+        target_value = st.number_input(
+            "target value", value=1.0, min_value=0.0, step=0.5,
+            label_visibility="collapsed",
+        )
+    with td_u_col:
+        target_unit = st.selectbox(
+            "target unit", ["seconds", "minutes", "hours"], index=1,
+            label_visibility="collapsed",
+        )
+    target_seconds = target_value * {"seconds": 1, "minutes": 60, "hours": 3600}[target_unit]
+    st.caption(f"= {target_seconds:g} seconds")
+
+    st.markdown("**Padding** (extra at non-shared cut edges)")
+    pad_n_col, pad_u_col = st.columns([3, 1])
+    with pad_n_col:
+        padding = st.number_input(
+            "padding value", value=0.5, step=0.1, min_value=0.0,
+            label_visibility="collapsed",
+        )
+    with pad_u_col:
+        st.markdown("&nbsp;")
+        st.markdown("**seconds**")
 
     st.divider()
 
@@ -343,10 +372,13 @@ def render_setup():
             "audio_sr": int(audio_sr),
             "audio_depth": int(audio_depth),
             "audio_channels": int(audio_channels),
-            "a_path": a_path, "a_tc": a_tc, "a_srt_at": float(a_srt_at),
+            "a_path": a_path,
+            "a_srt_starts_at": float(a_srt_starts_at),
             "multicam_enabled": multicam_enabled and mode == "highlight",
-            "b_path": b_path, "b_delay": b_delay,
-            "target_duration": target_duration,
+            "b_path": b_path,
+            "b_delay_seconds": int(b_delay_seconds),
+            "b_delay_frames": int(b_delay_frames),
+            "target_duration_seconds": float(target_seconds),
             "padding": float(padding),
         }
         st.session_state["stage"] = (
@@ -451,10 +483,7 @@ def render_block_builder():
         st.markdown(
             f"### 🎬 Your edit · {len(selected)} blocks · ~{total_secs}s"
         )
-        target_sec = (
-            srt2xml.parse_duration(c["target_duration"])
-            if c["target_duration"] else None
-        )
+        target_sec = c.get("target_duration_seconds") or None
         if target_sec:
             diff = total_secs - target_sec
             tag = "🎯" if abs(diff) < 5 else ("⚠️" if diff > 0 else "ℹ️")
@@ -671,6 +700,7 @@ def render_review():
 
 def build_spec():
     c = st.session_state["frozen_config"]
+    b_delay_str = f"{c['b_delay_seconds']}s{c['b_delay_frames']}f"
     spec = {
         "sequence": {
             "name": Path(c["uploaded_name"]).stem or "Edit",
@@ -682,22 +712,22 @@ def build_spec():
         },
         "cameras": {
             "A": {
-                "file": Path(c["a_path"]).name if c["a_path"] != "<<RELINK>>" else "A_camera",
+                "file": "A_camera",
                 "path": c["a_path"],
-                "anchor": {"srt_at": c["a_srt_at"], "source_tc": c["a_tc"]},
+                "srt_starts_at_source_seconds": c["a_srt_starts_at"],
             },
         },
         "settings": {
             "padding": c["padding"],
             "multicam": c["multicam_enabled"],
-            "target_duration": c["target_duration"] or None,
+            "target_duration": c["target_duration_seconds"] or None,
         },
         "mode": c["mode"],
     }
     if c["multicam_enabled"]:
         spec["cameras"]["B"] = {
-            "file": Path(c["b_path"]).name if c["b_path"] != "<<RELINK>>" else "B_camera",
-            "path": c["b_path"], "delay_from_a": c["b_delay"],
+            "file": "B_camera",
+            "path": c["b_path"], "delay_from_a": b_delay_str,
         }
     if c["mode"] == "highlight":
         spec["cuts"] = [{
@@ -738,10 +768,7 @@ def generate_xml():
         st.error(f"Unexpected error: {e}"); return
 
     duration_sec = total_frames / timebase
-    target_sec = (
-        srt2xml.parse_duration(c["target_duration"])
-        if c["target_duration"] else None
-    )
+    target_sec = c.get("target_duration_seconds") or None
 
     st.success(f"✅ Generated — {len(cuts)} cuts · {duration_sec:.2f}s")
 

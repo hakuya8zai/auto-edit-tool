@@ -271,17 +271,33 @@ def expand_cuts(specs, srt, default_padding):
 
 
 def compute_offsets(cams, fps_preset, displayformat):
-    """Compute frame-at-SRT-0 per camera. Returns (offsets dict, anchor_cam_id)."""
+    """Compute frame-at-SRT-0 per camera. Returns (offsets dict, anchor_cam_id).
+
+    Anchor camera can use EITHER:
+      - "srt_starts_at_source_seconds": <float>   (simpler, e.g. 0.0 or 828.78)
+      - "anchor": {"srt_at": <float>, "source_tc": "HH:MM:SS:FF"}   (legacy TC form)
+    Other cameras use "delay_from_<anchor_cam>" relative to the anchor.
+    """
     timebase = fps_preset["timebase"]
     fps_int = fps_preset["fps_int"]
     offsets = {}
 
-    anchor_cam = next((cid for cid, c in cams.items() if "anchor" in c), None)
+    anchor_cam = next(
+        (cid for cid, c in cams.items()
+         if ("anchor" in c) or ("srt_starts_at_source_seconds" in c)),
+        None,
+    )
     if anchor_cam is None:
-        raise SystemExit("at least one camera must have 'anchor' (srt_at + source_tc)")
+        raise SystemExit(
+            "at least one camera must have 'anchor' or 'srt_starts_at_source_seconds'"
+        )
 
     for cid, cam in cams.items():
-        if "anchor" in cam:
+        if "srt_starts_at_source_seconds" in cam:
+            offsets[cid] = int(round(
+                float(cam["srt_starts_at_source_seconds"]) * timebase
+            ))
+        elif "anchor" in cam:
             anchor_frame = parse_tc_to_frame(
                 cam["anchor"]["source_tc"], fps_preset, displayformat
             )
@@ -291,7 +307,8 @@ def compute_offsets(cams, fps_preset, displayformat):
             delay_key = f"delay_from_{anchor_cam.lower()}"
             if delay_key not in cam:
                 raise SystemExit(
-                    f"camera {cid!r} needs 'anchor' or {delay_key!r}"
+                    f"camera {cid!r} needs 'anchor', "
+                    f"'srt_starts_at_source_seconds', or {delay_key!r}"
                 )
             delay = parse_delay(cam[delay_key], fps_int)
             offsets[cid] = offsets[anchor_cam] - delay
@@ -629,8 +646,13 @@ def validate_spec(spec):
     cams = spec.get("cameras", {})
     if not cams:
         errors.append("cameras required (at least 1)")
-    if not any("anchor" in c for c in cams.values()):
-        errors.append("at least one camera must have 'anchor'")
+    if not any(
+        ("anchor" in c) or ("srt_starts_at_source_seconds" in c)
+        for c in cams.values()
+    ):
+        errors.append(
+            "at least one camera must have 'anchor' or 'srt_starts_at_source_seconds'"
+        )
     cam_ids = set(cams.keys())
 
     mode = spec.get("mode", "highlight")
