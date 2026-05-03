@@ -1,0 +1,32 @@
+{
+  "_comment": "Sequential mode: keep original SRT order, remove specified filler/redundant cues. Use for cleaning up a long talk while preserving structure.",
+  "sequence": {
+    "name": "Talk_Clean_Cut",
+    "fps": "59.94",
+    "displayformat": "NDF",
+    "width": 1920,
+    "height": 1080,
+    "pixel_aspect": "square",
+    "audio": {"sample_rate": 48000, "depth": 16, "channels": 2}
+  },
+  "cameras": {
+    "A": {
+      "file": "talk.mov",
+      "path": "/path/to/talk.mov",
+      "anchor": {"srt_at": 1.0, "source_tc": "00:13:48:47"}
+    }
+  },
+  "settings": {
+    "padding": 0.3,
+    "multicam": false,
+    "target_duration": "10min"
+  },
+  "mode": "sequential",
+  "default_cam": "A",
+  "remove": [
+    {"cues": "16",       "reason": "audience inaudible reply"},
+    {"cues": "32-34",    "reason": "filler 嗯啊"},
+    {"cues": "120-135",  "reason": "off-topic tangent about lunch"},
+    {"cues": "210",      "reason": "false start"}
+  ]
+}

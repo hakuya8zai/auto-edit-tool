@@ -1,0 +1,36 @@
+{
+  "_comment": "Dual-camera multicam at 59.94 fps NDF (this project's reference case)",
+  "sequence": {
+    "name": "Dual_Cam_Talk",
+    "fps": "59.94",
+    "displayformat": "NDF",
+    "width": 1920,
+    "height": 1080,
+    "pixel_aspect": "square",
+    "audio": {"sample_rate": 48000, "depth": 16, "channels": 2}
+  },
+  "cameras": {
+    "A": {
+      "file": "A_front.mov",
+      "path": "/path/to/A_front.mov",
+      "_comment": "Front wide shot — used for objective context, scene setting, callouts",
+      "anchor": {"srt_at": 1.0, "source_tc": "00:13:48:47"}
+    },
+    "B": {
+      "file": "B_side.mov",
+      "path": "/path/to/B_side.mov",
+      "_comment": "Side medium close — used for emotion, punchlines, intimate moments",
+      "delay_from_a": "54s29f"
+    }
+  },
+  "settings": {
+    "padding": 0.5,
+    "multicam": true
+  },
+  "cuts": [
+    {"cam": "A", "cues": "1-3",   "role": "cold-open"},
+    {"cam": "B", "cues": "5-7",   "role": "emotion"},
+    {"cam": "A", "cues": "9-11",  "role": "context"},
+    {"cam": "B", "cues": "13",    "role": "punchline"}
+  ]
+}

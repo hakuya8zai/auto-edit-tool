@@ -1,0 +1,28 @@
+{
+  "_comment": "Single-camera example at 29.97 fps drop-frame (typical NTSC broadcast)",
+  "sequence": {
+    "name": "Solo_Talk_Edit",
+    "fps": "29.97",
+    "displayformat": "DF",
+    "width": 1920,
+    "height": 1080,
+    "pixel_aspect": "square",
+    "audio": {"sample_rate": 48000, "depth": 16, "channels": 2}
+  },
+  "cameras": {
+    "A": {
+      "file": "talk.mov",
+      "path": "/path/to/talk.mov",
+      "anchor": {"srt_at": 1.0, "source_tc": "00:00:30;15"}
+    }
+  },
+  "settings": {
+    "padding": 0.5,
+    "multicam": false
+  },
+  "cuts": [
+    {"cam": "A", "cues": "1-3",   "label": "opener"},
+    {"cam": "A", "cues": "5-8",   "label": "interaction"},
+    {"cam": "A", "cues": "10-12", "label": "punchline"}
+  ]
+}
