@@ -206,134 +206,153 @@ def render_setup():
         "These get **frozen** when you start. Use sidebar **Reset** to change."
     )
 
-    with st.form("setup_form"):
-        # SRT + mode
-        st.subheader("📄 SRT & mode")
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            uploaded = st.file_uploader("SRT file", type=["srt"])
-        with col2:
-            mode = st.radio("Mode", ["highlight", "sequential"],
-                help="highlight = pick & arrange content blocks · sequential = clean cut keeping order")
-        purpose = st.text_input("Purpose / audience (optional)",
-            placeholder="e.g. 募款短片 / 社群短片 / podcast cleanup")
+    # ----- SRT + mode -----
+    st.subheader("📄 SRT & mode")
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        uploaded = st.file_uploader("SRT file", type=["srt"])
+    with col2:
+        mode = st.radio(
+            "Mode", ["highlight", "sequential"],
+            help="highlight = pick & arrange content blocks · "
+                 "sequential = clean cut keeping order",
+        )
+    purpose = st.text_input(
+        "Purpose / audience (optional)",
+        placeholder="e.g. 募款短片 / 社群短片 / podcast cleanup",
+    )
 
-        st.divider()
+    st.divider()
 
-        st.subheader("⚙️ Sequence")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: fps = st.selectbox("fps",
-            ["23.976","24","25","29.97","30","50","59.94","60"], index=6)
-        with c2: df = st.selectbox("displayformat", ["NDF", "DF"],
+    # ----- Sequence -----
+    st.subheader("⚙️ Sequence")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        fps = st.selectbox("fps",
+            ["23.976", "24", "25", "29.97", "30", "50", "59.94", "60"], index=6)
+    with c2:
+        df = st.selectbox("displayformat", ["NDF", "DF"],
             help="DF only valid for 29.97/59.94")
-        with c3: width = st.number_input("width", min_value=1, value=1920, step=2)
-        with c4: height = st.number_input("height", min_value=1, value=1080, step=2)
+    with c3:
+        width = st.number_input("width", min_value=1, value=1920, step=2)
+    with c4:
+        height = st.number_input("height", min_value=1, value=1080, step=2)
 
-        c5, c6, c7, c8 = st.columns(4)
-        with c5: pixel_aspect = st.selectbox("pixel aspect",
+    c5, c6, c7, c8 = st.columns(4)
+    with c5:
+        pixel_aspect = st.selectbox("pixel aspect",
             ["square", "NTSC-601", "PAL-601", "HD"])
-        with c6: audio_sr = st.selectbox("audio rate", [44100, 48000, 96000], index=1)
-        with c7: audio_depth = st.selectbox("audio depth", [16, 24])
-        with c8: audio_channels = st.number_input("audio ch", 1, 8, 2)
+    with c6:
+        audio_sr = st.selectbox("audio rate", [44100, 48000, 96000], index=1)
+    with c7:
+        audio_depth = st.selectbox("audio depth", [16, 24])
+    with c8:
+        audio_channels = st.number_input("audio ch", 1, 8, 2)
 
-        st.divider()
+    st.divider()
 
-        st.subheader("🎥 Cameras")
-        st.caption(
-            "Source video files don't need paths here — re-link them in Premiere "
-            "after importing the XML."
+    # ----- Cameras -----
+    st.subheader("🎥 Cameras")
+    st.caption(
+        "Source video files don't need paths here — re-link them in Premiere "
+        "after importing the XML."
+    )
+
+    multicam_enabled = st.checkbox(
+        "➕ Add Camera B (multicam / dual-camera setup)",
+        help="Required for highlight mode A/B switching. Sequential mode is single-cam.",
+    )
+
+    b_delay = "0s0f"
+    if multicam_enabled:
+        b_delay = st.text_input(
+            "⏱️ B delay from A — how much later B camera started recording",
+            "0s0f",
+            help="Format: '54s29f' = 54 sec 29 frames · '54.5' = decimal sec · "
+                 "'00:00:54:29' = TC. Direction: B started LATER than A.",
         )
 
-        multicam_enabled = st.checkbox(
-            "➕ Add Camera B (multicam / dual-camera setup)",
-            help="Required for highlight mode A/B switching. Sequential mode is single-cam.",
+    with st.expander(
+        "⚙️ Advanced: SRT-to-source alignment "
+        "(only if your SRT timestamps don't match source video timing)"
+    ):
+        st.markdown(
+            "**If your SRT was auto-transcribed from this source video** "
+            "(e.g. via Whisper), the timestamps already align — leave the defaults.\n\n"
+            "**Otherwise** set the source TC reading at the moment SRT cue 1 starts. "
+            "Example: source video records 13 min of pre-roll before speech begins, "
+            "and SRT cue 1 starts at SRT 1.0s; you'd set "
+            "`source_tc = 00:13:48:47`, `srt_at = 1.0`."
         )
-
-        b_delay = "0s0f"
-        if multicam_enabled:
-            b_delay = st.text_input(
-                "⏱️ B delay from A — how much later B camera started recording",
-                "0s0f",
-                help="Format: '54s29f' = 54 sec 29 frames · '54.5' = decimal sec · "
-                     "'00:00:54:29' = TC. Direction: B started LATER than A.",
+        ca1, ca2 = st.columns(2)
+        with ca1:
+            a_tc = st.text_input("A anchor source TC", "00:00:00:00")
+        with ca2:
+            a_srt_at = st.number_input(
+                "A anchor srt_at (seconds)", value=0.0, step=0.1
             )
 
-        with st.expander(
-            "⚙️ Advanced: SRT-to-source alignment "
-            "(only if your SRT timestamps don't match source video timing)"
-        ):
-            st.markdown(
-                "**If your SRT was auto-transcribed from this source video** "
-                "(e.g. via Whisper), the timestamps already align — leave the defaults.\n\n"
-                "**Otherwise** set the source TC reading at the moment SRT cue 1 starts. "
-                "Example: source video records 13 min of pre-roll before speech begins, "
-                "and SRT cue 1 starts at SRT 1.0s; you'd set "
-                "`source_tc = 00:13:48:47`, `srt_at = 1.0`."
-            )
-            ca1, ca2 = st.columns(2)
-            with ca1:
-                a_tc = st.text_input("A anchor source TC", "00:00:00:00")
-            with ca2:
-                a_srt_at = st.number_input(
-                    "A anchor srt_at (seconds)", value=0.0, step=0.1
-                )
+    # Hardcoded placeholder paths — user will re-link in Premiere.
+    a_path = "<<RELINK>>"
+    b_path = "<<RELINK>>"
 
-        # Hardcode placeholder paths — user will re-link in Premiere.
-        a_path = "<<RELINK>>"
-        b_path = "<<RELINK>>"
+    st.divider()
 
-        st.divider()
-
-        st.subheader("⏱️ Output")
-        co1, co2 = st.columns(2)
-        with co1: target_duration = st.text_input("Target duration", "60s",
+    # ----- Output -----
+    st.subheader("⏱️ Output")
+    co1, co2 = st.columns(2)
+    with co1:
+        target_duration = st.text_input("Target duration", "60s",
             help="60 / '60s' / '1min' / '1.5min' / '1h30min' / '1:30'")
-        with co2: padding = st.number_input("Padding (seconds)",
+    with co2:
+        padding = st.number_input("Padding (seconds)",
             value=0.5, step=0.1, min_value=0.0)
 
-        st.divider()
+    st.divider()
 
-        submitted = st.form_submit_button("▶️ Start discussion",
-            type="primary", use_container_width=True)
+    # ----- Start button (regular, not form-submit, so conditional UI works) -----
+    if st.button("▶️ Start discussion", type="primary", use_container_width=True):
+        errors = []
+        if not uploaded:
+            errors.append("Upload an SRT first.")
+        if not api_key:
+            errors.append("Enter Anthropic API key in sidebar.")
+        if df == "DF" and fps not in ("29.97", "59.94"):
+            errors.append(f"DF only valid for 29.97/59.94 fps (got {fps}).")
+        if errors:
+            for e in errors:
+                st.error(e)
+            return
 
-        if submitted:
-            errors = []
-            if not uploaded: errors.append("Upload an SRT first.")
-            if not api_key: errors.append("Enter Anthropic API key in sidebar.")
-            if df == "DF" and fps not in ("29.97", "59.94"):
-                errors.append(f"DF only valid for 29.97/59.94 fps (got {fps}).")
-            if errors:
-                for e in errors: st.error(e)
-                return
+        try:
+            srt_text = uploaded.read().decode("utf-8")
+            cues = srt2xml.parse_srt(srt_text)
+        except Exception as e:
+            st.error(f"SRT parse failed: {e}")
+            return
 
-            try:
-                srt_text = uploaded.read().decode("utf-8")
-                cues = srt2xml.parse_srt(srt_text)
-            except Exception as e:
-                st.error(f"SRT parse failed: {e}"); return
-
-            st.session_state["frozen_config"] = {
-                "uploaded_name": uploaded.name,
-                "srt_text": srt_text,
-                "cues": cues,
-                "mode": mode,
-                "purpose": purpose,
-                "fps": fps, "df": df,
-                "width": int(width), "height": int(height),
-                "pixel_aspect": pixel_aspect,
-                "audio_sr": int(audio_sr),
-                "audio_depth": int(audio_depth),
-                "audio_channels": int(audio_channels),
-                "a_path": a_path, "a_tc": a_tc, "a_srt_at": float(a_srt_at),
-                "multicam_enabled": multicam_enabled and mode == "highlight",
-                "b_path": b_path, "b_delay": b_delay,
-                "target_duration": target_duration,
-                "padding": float(padding),
-            }
-            st.session_state["stage"] = (
-                "block_builder" if mode == "highlight" else "preset_pick"
-            )
-            st.rerun()
+        st.session_state["frozen_config"] = {
+            "uploaded_name": uploaded.name,
+            "srt_text": srt_text,
+            "cues": cues,
+            "mode": mode,
+            "purpose": purpose,
+            "fps": fps, "df": df,
+            "width": int(width), "height": int(height),
+            "pixel_aspect": pixel_aspect,
+            "audio_sr": int(audio_sr),
+            "audio_depth": int(audio_depth),
+            "audio_channels": int(audio_channels),
+            "a_path": a_path, "a_tc": a_tc, "a_srt_at": float(a_srt_at),
+            "multicam_enabled": multicam_enabled and mode == "highlight",
+            "b_path": b_path, "b_delay": b_delay,
+            "target_duration": target_duration,
+            "padding": float(padding),
+        }
+        st.session_state["stage"] = (
+            "block_builder" if mode == "highlight" else "preset_pick"
+        )
+        st.rerun()
 
 
 # ============================================================================
