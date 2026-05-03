@@ -1,4 +1,16 @@
-# srt-edit · Streamlit app
+---
+title: Auto Edit Tool
+emoji: 🎬
+colorFrom: blue
+colorTo: purple
+sdk: streamlit
+sdk_version: 1.30.0
+app_file: app.py
+pinned: false
+license: mit
+---
+
+# auto-edit-tool · Streamlit app
 
 Convert Whisper-style SRT into Premiere Pro FCP7 XML, single-camera or dual-camera multicam, with two editing modes (`highlight` / `sequential`).
 
