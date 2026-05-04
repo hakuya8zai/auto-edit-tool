@@ -1,18 +1,22 @@
 """Streamlit app: SRT → Premiere FCP7 XML — block-based assembly wizard.
 
-Two-phase flow:
-  Phase 1 (Setup): pre-fill all technical parameters once
-  Phase 2 (Discussion):
-    - highlight: LLM proposes content blocks; user picks/reorders
-    - sequential: LLM proposes removal presets; user picks/fine-tunes
-  Phase 3 (Review & Generate): XML download + verify anchors
+Flow:
+  1. mode_select       — pick highlight or sequential (big cards)
+  2a. setup_highlight  → theme_pick → block_builder → review (highlight)
+  2b. setup_sequential → preset_pick → remove_review → review (sequential)
 
-Setup is FROZEN after Start. Reset workflow to change.
+Highlight block_builder:
+- LLM produces categorized blocks (by narrative role in the OUTPUT clip,
+  not source position) + a recommended initial assembly.
+- User drags to reorder & cross-pool. Regenerate updates only the unselected
+  pool, keeping the user's picks intact.
+
 BYOK Anthropic API key, session-only, never persisted.
 """
 
 import json
 import re
+import uuid
 from pathlib import Path
 
 import streamlit as st
@@ -20,6 +24,30 @@ import streamlit as st
 import srt2xml
 
 st.set_page_config(page_title="SRT → Premiere XML", page_icon="🎬", layout="wide")
+
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+NARRATIVE_ROLES = {
+    "opener":  {"emoji": "🎯", "label_zh": "吸睛開頭",
+                "desc": "金句、反差、衝擊數據——適合放在新影片最前面抓住注意力"},
+    "teaser":  {"emoji": "🪝", "label_zh": "勾人 hook",
+                "desc": "懸念、提問、tease——讓觀眾想繼續看下去"},
+    "context": {"emoji": "💭", "label_zh": "鋪陳脈絡",
+                "desc": "情境、背景、設定——交代必要的前提"},
+    "climax":  {"emoji": "🔥", "label_zh": "高潮金句",
+                "desc": "轉折、洞見、共鳴——影片的情緒/觀點高峰"},
+    "story":   {"emoji": "💝", "label_zh": "動人故事",
+                "desc": "個人經驗、案例、情感——讓觀點落地"},
+    "data":    {"emoji": "📊", "label_zh": "數據佐證",
+                "desc": "事實、數字、研究——強化說服力"},
+    "closer":  {"emoji": "🎬", "label_zh": "收尾呼籲",
+                "desc": "行動、總結、希望——影片結尾留印象"},
+}
+ROLE_ORDER = ["opener", "teaser", "context", "climax", "story", "data", "closer"]
+
 
 # ============================================================================
 # State init
@@ -30,17 +58,21 @@ def reset_workflow():
     for k in list(st.session_state.keys()):
         if k not in keep:
             del st.session_state[k]
-    st.session_state["stage"] = "setup"
+    st.session_state["stage"] = "mode_select"
 
 
 for k, v in [
-    ("stage", "setup"),
+    ("stage", "mode_select"),
+    ("mode", None),
     ("frozen_config", None),
-    ("available_blocks", None),
-    ("selected_blocks", []),
+    ("themes", None),
+    ("chosen_theme", None),
+    ("block_pool", None),     # all proposed blocks {id: block}
+    ("selected_ids", []),     # ordered list of ids in 你的剪輯
     ("presets", None),
     ("chosen_preset", None),
     ("remove_keep_flags", None),
+    ("regen_themes", 0),
     ("regen_blocks", 0),
     ("regen_presets", 0),
 ]:
@@ -48,26 +80,19 @@ for k, v in [
 
 
 # ============================================================================
-# Sidebar: API key + Reset (always visible)
+# Sidebar
 # ============================================================================
 
 with st.sidebar:
     st.header("🤖 LLM 設定")
-    api_key = st.text_input(
-        "Anthropic API key",
-        type="password",
+    api_key = st.text_input("Anthropic API key", type="password",
         key="api_key_input",
-        help="僅在此瀏覽器 session 使用,不會儲存。關閉分頁即清除。",
-    )
-    llm_model = st.selectbox(
-        "Model",
+        help="僅在此瀏覽器 session 使用,不會儲存。關閉分頁即清除。")
+    llm_model = st.selectbox("Model",
         ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-        index=1, key="llm_model_input",
-    )
-    if api_key:
-        st.caption("🔓 已輸入 key(僅本次 session)")
-    else:
-        st.caption("輸入 key 才能使用 LLM 提案功能")
+        index=1, key="llm_model_input")
+    if api_key: st.caption("🔓 已輸入 key(僅本次 session)")
+    else: st.caption("輸入 key 才能使用 LLM 提案功能")
 
     st.divider()
     if st.button("🔄 重設流程", use_container_width=True):
@@ -75,13 +100,14 @@ with st.sidebar:
         st.rerun()
 
     if st.session_state.get("frozen_config"):
+        c = st.session_state["frozen_config"]
         st.divider()
         st.subheader("📋 前置設定摘要")
-        c = st.session_state["frozen_config"]
         st.caption(
-            f"**{c['fps']} {c['df']}** · {c['width']}×{c['height']}\n\n"
-            f"**模式**: `{c['mode']}` · 目標長度 `{c['target_duration_seconds']:.0f}s`\n\n"
-            f"**鏡位**: {'A+B 雙機' if c['multicam_enabled'] else '僅 A 機'}"
+            f"**模式**:`{c['mode']}`\n\n"
+            f"**規格**:{c['fps']} {c['df']} · {c['width']}×{c['height']}\n\n"
+            f"**目標**:{c['target_duration_seconds']:.0f} 秒\n\n"
+            f"**鏡位**:{'A+B 雙機' if c['multicam_enabled'] else '僅 A 機'}"
         )
 
 
@@ -91,11 +117,14 @@ with st.sidebar:
 
 st.title("🎬 SRT → Premiere XML 自動剪輯工具")
 stage_label = {
-    "setup":         "1️⃣ 前置設定",
-    "block_builder": "2️⃣ 選擇並排序片段",
-    "preset_pick":   "2️⃣ 選擇移除程度",
-    "remove_review": "3️⃣ 微調移除清單",
-    "review":        "4️⃣ 確認並產出",
+    "mode_select":      "1️⃣ 選擇剪輯模式",
+    "setup_highlight":  "2️⃣ 前置設定 (短片精華)",
+    "setup_sequential": "2️⃣ 前置設定 (順剪)",
+    "theme_pick":       "3️⃣ 選擇主題",
+    "block_builder":    "4️⃣ 組合片段",
+    "preset_pick":      "3️⃣ 選擇移除程度",
+    "remove_review":    "4️⃣ 微調移除清單",
+    "review":           "5️⃣ 確認並產出",
 }.get(st.session_state["stage"], "?")
 st.caption(f"📍 {stage_label}")
 
@@ -111,10 +140,8 @@ def call_claude(api_key, model, system, user_msg, max_tokens=8192):
         st.error("尚未安裝 `anthropic` 套件")
         st.stop()
     client = anthropic.Anthropic(api_key=api_key)
-    msg = client.messages.create(
-        model=model, max_tokens=max_tokens,
-        system=system, messages=[{"role": "user", "content": user_msg}],
-    )
+    msg = client.messages.create(model=model, max_tokens=max_tokens,
+        system=system, messages=[{"role": "user", "content": user_msg}])
     return msg.content[0].text
 
 
@@ -126,44 +153,80 @@ def extract_json(text):
     return json.loads(text)
 
 
-SYS_BLOCKS = """You are an SRT-to-Premiere editing assistant for Taiwanese users.
+SYS_THEMES = """You are an SRT-to-Premiere editing assistant for Taiwanese users (highlight mode).
 
-Propose 8-12 content BLOCKS from this SRT. Each block is a self-contained
-quotable segment that the user can mix-and-match to assemble a clip.
+Propose 5-7 DISTINCT theme options for a short narrative clip from this SRT.
+Each theme is a narrative angle / story focus.
 
-Vary by:
-- Role: cold-open, hook, setup, punchline, callout, transition, close, demo, data
-- Length: short (2-5s) AND medium (5-15s)
-- Tone: emotional / data / humorous / interactive / contrast
+Vary the angles: emotional / data / humorous / interactive / contrast / hook+arc.
 
-The user will pick which blocks to include AND reorder them. So:
-- Include opening-suitable blocks (cold-open, hook).
-- Include body-suitable blocks (setup, data, punchline).
-- Include closing-suitable blocks (callout, close).
-- Distinct blocks should NOT heavily overlap in cue range.
+**IMPORTANT: Respond in Traditional Chinese (zh-TW)** for `name`, `angle`,
+`selling_point`, `audience_fit`. `hook_quote` is verbatim from SRT.
 
-**IMPORTANT: Respond in Traditional Chinese (zh-TW)** for all text fields
-(`name`, `selling_point`). Keep `hook_quote` verbatim from the SRT (whatever
-language it's in). Keep `role` in English (it's an enum).
+Respond with JSON ONLY:
+{
+  "themes": [
+    {
+      "name": "<簡短主題名稱>",
+      "angle": "<一句話描述敘事角度>",
+      "hook_quote": "<verbatim SRT line>",
+      "cue_range_hint": "<rough cue range, just for user preview>",
+      "estimated_length_seconds": <int>,
+      "selling_point": "<為什麼這主題有效>",
+      "audience_fit": "<適合什麼觀眾>"
+    }
+  ]
+}
+"""
 
-Respond with JSON ONLY (no markdown):
+SYS_BLOCKS = """You are an SRT-to-Premiere editing assistant for Taiwanese users (highlight mode).
+
+Given an SRT, a chosen theme, target length, and camera availability,
+produce TWO things:
+
+1. A pool of 15-25 content BLOCKS, each tagged by `narrative_role` —
+   the role this block would play IN THE OUTPUT CLIP (not its position
+   in the source SRT).
+
+   narrative_role enum:
+   - opener  (吸睛開頭): hook quotes, contrast, shock data — for clip OPENING
+   - teaser  (勾人 hook): suspense, tease, question — make viewer want to continue
+   - context (鋪陳脈絡): scenario, background, premise
+   - climax  (高潮金句): reveal, insight, twist — clip's emotional/intellectual peak
+   - story   (動人故事): personal anecdote, case, emotion — grounds the message
+   - data    (數據佐證): facts, numbers, research — strengthens persuasion
+   - closer  (收尾呼籲): call to action, summary, hope — clip ENDING
+
+2. A `recommended_assembly` — an ordered list of 5-8 block IDs from the pool
+   that forms a complete narrative arc:
+       opener → (teaser?) → context → story/data/climax → closer
+
+**IMPORTANT: Respond in Traditional Chinese (zh-TW)** for `name`,
+`selling_point`. `hook_quote` is verbatim from SRT.
+
+Distribute blocks across roles so the user has good options in each category.
+Aim for ≥2 blocks per role where the SRT material allows.
+
+Respond with JSON ONLY:
 {
   "blocks": [
     {
+      "id": "<short unique id, e.g. 'b1', 'b2'...>",
       "name": "<簡短中文名稱>",
       "hook_quote": "<verbatim from SRT>",
       "cue_range": "<consecutive cues, e.g. '82' or '256-261'>",
       "estimated_length_seconds": <int>,
-      "role": "<cold-open|hook|setup|punchline|callout|close|demo|data|transition>",
+      "narrative_role": "opener|teaser|context|climax|story|data|closer",
       "suggested_cam": "A|B",
-      "selling_point": "<為什麼這段有效,中文說明>"
+      "selling_point": "<中文 why-it-works>"
     }
-  ]
+  ],
+  "recommended_assembly": ["b1", "b3", "b7", ...]
 }
 
-Camera psychology (use to set suggested_cam):
-- A (front wide) = objective context, scene-setting, callouts, conceptual
-- B (side close) = emotion, punchlines, intimate moments, audience reactions
+Camera psychology (set suggested_cam):
+- A (front wide) = objective context, scene-setting, callouts
+- B (side close) = emotion, punchlines, intimate moments
 """
 
 SYS_PRESETS = """You are an SRT-to-Premiere editing assistant in sequential clean-cut mode for Taiwanese users.
@@ -175,9 +238,8 @@ Propose 3 removal heaviness presets:
 
 For each, list ALL cues to remove with reason and preview text.
 
-**IMPORTANT: Respond in Traditional Chinese (zh-TW)** for `description` and
-`reason`. Keep `name` as the English label (Conservative/Moderate/Aggressive).
-`preview_text` is verbatim from SRT.
+**IMPORTANT: Respond in Traditional Chinese (zh-TW)** for `description`
+and `reason`. Keep `name` as English label. `preview_text` is verbatim.
 
 Respond with JSON ONLY:
 {
@@ -201,26 +263,143 @@ Rules:
 
 
 # ============================================================================
-# Stage: Setup (Phase 1)
+# Helpers
+# ============================================================================
+
+def time_3unit(label, key_prefix, fps_int,
+               default_m=0, default_s=0, default_f=0,
+               help_text=None, allow_minutes=True):
+    """Render a 3-unit time picker (minutes / seconds / frames). Returns (m, s, f)."""
+    if label:
+        st.markdown(f"**{label}**")
+    if help_text:
+        st.caption(help_text)
+    if allow_minutes:
+        cols = st.columns([2, 0.7, 2, 0.7, 2, 1.6])
+        with cols[0]:
+            m = st.number_input("min", min_value=0, value=default_m, step=1,
+                label_visibility="collapsed", key=f"{key_prefix}_min")
+        with cols[1]:
+            st.markdown("<div style='padding-top:0.5em'><b>分</b></div>",
+                unsafe_allow_html=True)
+        with cols[2]:
+            s = st.number_input("sec", min_value=0, max_value=59,
+                value=default_s, step=1,
+                label_visibility="collapsed", key=f"{key_prefix}_sec")
+        with cols[3]:
+            st.markdown("<div style='padding-top:0.5em'><b>秒</b></div>",
+                unsafe_allow_html=True)
+        with cols[4]:
+            f = st.number_input("frame", min_value=0, max_value=fps_int - 1,
+                value=default_f, step=1,
+                label_visibility="collapsed", key=f"{key_prefix}_frame")
+        with cols[5]:
+            st.markdown(f"<div style='padding-top:0.5em'><b>frame</b> "
+                        f"(0–{fps_int - 1})</div>", unsafe_allow_html=True)
+    else:
+        m = 0
+        cols = st.columns([3, 0.7, 3, 1.6])
+        with cols[0]:
+            s = st.number_input("sec", min_value=0,
+                value=default_s, step=1,
+                label_visibility="collapsed", key=f"{key_prefix}_sec")
+        with cols[1]:
+            st.markdown("<div style='padding-top:0.5em'><b>秒</b></div>",
+                unsafe_allow_html=True)
+        with cols[2]:
+            f = st.number_input("frame", min_value=0, max_value=fps_int - 1,
+                value=default_f, step=1,
+                label_visibility="collapsed", key=f"{key_prefix}_frame")
+        with cols[3]:
+            st.markdown(f"<div style='padding-top:0.5em'><b>frame</b> "
+                        f"(0–{fps_int - 1})</div>", unsafe_allow_html=True)
+    return m, s, f
+
+
+def block_to_label(b):
+    """Compact 1-line label for sortable display."""
+    role = b.get("narrative_role", "")
+    role_emoji = NARRATIVE_ROLES.get(role, {}).get("emoji", "📝")
+    name = b.get("name", "?")
+    quote = b.get("hook_quote", "")[:30]
+    secs = b.get("estimated_length_seconds", "?")
+    return f"{role_emoji} [{secs}s] {name} — 「{quote}」"
+
+
+def parse_label_to_id(label, blocks_by_id):
+    """Reverse: given the label string in sortable, find its block id."""
+    for bid, b in blocks_by_id.items():
+        if block_to_label(b) == label:
+            return bid
+    return None
+
+
+# ============================================================================
+# Stage: mode_select
+# ============================================================================
+
+def render_mode_select():
+    st.markdown("## 你想做什麼樣的剪輯?")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.container(border=True):
+            st.markdown("### 🎬 短片精華")
+            st.markdown("**`highlight`** mode")
+            st.markdown(
+                "從原片挑出有故事弧的精華片段組合成新片。\n\n"
+                "**適合**:募款短片 / 社群短片 / 預告 / 摘要金句\n\n"
+                "**長度**:15 秒 ~ 5 分鐘\n\n"
+                "**多機**:支援 A+B 雙機切換\n\n"
+                "**流程**:\n"
+                "1. 設定規格 →\n"
+                "2. 選一個敘事主題 →\n"
+                "3. AI 提案推薦版本 + 分類好的素材庫 →\n"
+                "4. 你拖拉組合 → 產出"
+            )
+            if st.button("選擇短片精華", type="primary",
+                         key="pick_highlight", use_container_width=True):
+                st.session_state["mode"] = "highlight"
+                st.session_state["stage"] = "setup_highlight"
+                st.rerun()
+
+    with col2:
+        with st.container(border=True):
+            st.markdown("### ✂️ 順剪去廢話")
+            st.markdown("**`sequential`** mode")
+            st.markdown(
+                "保留原 SRT 順序,AI 直接掃出冗詞贅句、離題段落,你勾選確認後移除。\n\n"
+                "**適合**:演講順剪 / podcast 清理 / 內部存檔\n\n"
+                "**長度**:5 分鐘 ~ 30 分鐘\n\n"
+                "**多機**:僅單機\n\n"
+                "**流程**:\n"
+                "1. 設定規格 →\n"
+                "2. AI 直接掃描提移除清單(無需主題討論) →\n"
+                "3. 你勾選/取消個別 cue → 產出"
+            )
+            if st.button("選擇順剪去廢話", type="primary",
+                         key="pick_sequential", use_container_width=True):
+                st.session_state["mode"] = "sequential"
+                st.session_state["stage"] = "setup_sequential"
+                st.rerun()
+
+
+# ============================================================================
+# Stage: Setup (mode-aware)
 # ============================================================================
 
 def render_setup():
+    mode = st.session_state["mode"]
+    is_seq = (mode == "sequential")
     st.markdown(
-        "填寫所有技術參數並上傳 SRT。按下「開始討論」後這些設定會**鎖定**,"
+        f"### 前置設定 — {'順剪' if is_seq else '短片精華'}模式\n"
+        "填寫所有技術參數並上傳 SRT。按下「開始」後這些設定會**鎖定**,"
         "需要修改請使用左側的「🔄 重設流程」。"
     )
 
-    # ----- SRT + mode -----
-    st.subheader("📄 SRT 與剪輯模式")
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        uploaded = st.file_uploader("上傳 SRT 檔案", type=["srt"])
-    with col2:
-        mode = st.radio(
-            "剪輯模式", ["highlight", "sequential"],
-            help="**highlight** = 短片精華,自由選擇片段並排列順序。\n\n"
-                 "**sequential** = 順剪,保留原 SRT 順序、只移除指定片段。",
-        )
+    # ----- SRT -----
+    st.subheader("📄 SRT")
+    uploaded = st.file_uploader("上傳 SRT 檔案", type=["srt"])
     purpose = st.text_input(
         "用途 / 目標觀眾(選填)",
         placeholder="例如:募款短片 / 社群短片 / podcast 順剪",
@@ -241,14 +420,12 @@ def render_setup():
         width = st.number_input("寬度 (px)", min_value=1, value=1920, step=2)
     with c4:
         height = st.number_input("高度 (px)", min_value=1, value=1080, step=2)
-
     c5, c6, c7, c8 = st.columns(4)
     with c5:
         pixel_aspect = st.selectbox("pixel aspect",
             ["square", "NTSC-601", "PAL-601", "HD"])
     with c6:
-        audio_sr = st.selectbox("音訊取樣率 (Hz)",
-            [44100, 48000, 96000], index=1)
+        audio_sr = st.selectbox("音訊取樣率 (Hz)", [44100, 48000, 96000], index=1)
     with c7:
         audio_depth = st.selectbox("位元深度 (bit)", [16, 24])
     with c8:
@@ -258,68 +435,34 @@ def render_setup():
 
     # ----- Cameras -----
     st.subheader("🎥 攝影機")
-    st.caption(
-        "不需要在這裡指定來源檔路徑——匯入 Premiere 後 re-link 即可。"
-    )
-
+    st.caption("不需要在這裡指定來源檔路徑——匯入 Premiere 後 re-link 即可。")
     fps_int = srt2xml.FPS_PRESETS[fps]["fps_int"]
 
-    # ----- A camera SRT alignment -----
-    st.markdown("**📍 逐字稿從 A 機影片的第幾秒開始?**")
-    st.caption("若 SRT 是用 Whisper 從這份 A 機原檔自動轉錄(時間戳已對齊),"
-               "保持 0 秒 0 frame。\n\n"
-               "若 A 機有 pre-roll(例如錄影機提早開機 13 分鐘才開始講話),"
-               "輸入講話開始的位置(例如 `828` 秒 + `47` frames)。")
-    a1, a2, a3, a4 = st.columns([3, 1, 3, 1])
-    with a1:
-        a_srt_starts_seconds = st.number_input(
-            "A srt starts seconds", min_value=0, value=0, step=1,
-            label_visibility="collapsed",
-        )
-    with a2:
-        st.markdown("&nbsp;")
-        st.markdown("**秒 (s)**")
-    with a3:
-        a_srt_starts_frames = st.number_input(
-            "A srt starts frames", min_value=0, max_value=fps_int - 1,
-            value=0, step=1,
-            label_visibility="collapsed",
-        )
-    with a4:
-        st.markdown("&nbsp;")
-        st.markdown(f"**frames** (0–{fps_int - 1})")
-
-    multicam_enabled = st.checkbox(
-        "➕ 加入 B 機(雙機 multicam)",
-        help="highlight 模式 A/B 切換需要。sequential 模式僅支援單機。",
+    a_m, a_s, a_f = time_3unit(
+        "📍 逐字稿從 A 機影片的第幾分幾秒幾 frame 開始?",
+        key_prefix="a_srt_starts", fps_int=fps_int,
+        help_text="若 SRT 是用 Whisper 從這份 A 機原檔自動轉錄(時間戳已對齊),"
+                  "保持 0 分 0 秒 0 frame。若 A 機有 pre-roll(例如錄影機提早開機"
+                  "13 分鐘才開始講話),輸入講話開始的位置(例如 13 分 48 秒 47 frame)。",
     )
 
-    b_delay_seconds = 0
-    b_delay_frames = 0
-    if multicam_enabled:
-        st.markdown("**⏱️ B 機比 A 機晚多久開機?**")
-        bd_s_col, bd_s_unit, bd_f_col, bd_f_unit = st.columns([3, 1, 3, 1])
-        with bd_s_col:
-            b_delay_seconds = st.number_input(
-                "B delay seconds", min_value=0, value=0, step=1,
-                label_visibility="collapsed",
+    multicam_enabled = False
+    b_m = b_s = b_f = 0
+    if not is_seq:
+        multicam_enabled = st.checkbox(
+            "➕ 加入 B 機(雙機 multicam)",
+            help="Sequential 模式僅支援單機。",
+        )
+        if multicam_enabled:
+            b_m, b_s, b_f = time_3unit(
+                "⏱️ B 機比 A 機晚多久開機?",
+                key_prefix="b_delay", fps_int=fps_int,
+                help_text="方向:B 比 A **晚**開機(B 的 pre-roll 較短)。"
+                          "可從兩機都看得到的拍手 / 揮手動作目測。",
             )
-        with bd_s_unit:
-            st.markdown("&nbsp;")
-            st.markdown("**秒 (s)**")
-        with bd_f_col:
-            b_delay_frames = st.number_input(
-                "B delay frames", min_value=0, max_value=fps_int - 1,
-                value=0, step=1,
-                label_visibility="collapsed",
-            )
-        with bd_f_unit:
-            st.markdown("&nbsp;")
-            st.markdown(f"**frames** (0–{fps_int - 1})")
-        st.caption("方向:B 比 A **晚**開機(B 的 pre-roll 較短)。"
-                   "可從兩機都看得到的拍手 / 揮手動作目測。")
+    else:
+        st.info("ℹ️ 順剪模式僅支援單機(A 機)。")
 
-    # Hardcoded placeholder paths — user will re-link in Premiere.
     a_path = "<<RELINK>>"
     b_path = "<<RELINK>>"
 
@@ -327,49 +470,42 @@ def render_setup():
 
     # ----- Output -----
     st.subheader("⏱️ 輸出設定")
-
     st.markdown("**目標長度**")
-    td_n_col, td_u_col = st.columns([3, 1])
-    with td_n_col:
-        target_value = st.number_input(
-            "target value", value=1.0, min_value=0.0, step=0.5,
-            label_visibility="collapsed",
-        )
-    with td_u_col:
-        target_unit_label = st.selectbox(
-            "target unit", ["秒 (seconds)", "分鐘 (minutes)", "小時 (hours)"],
-            index=1,
-            label_visibility="collapsed",
-        )
+    td_n, td_u = st.columns([3, 1])
+    with td_n:
+        target_value = st.number_input("target value",
+            value=1.0, min_value=0.0, step=0.5,
+            label_visibility="collapsed")
+    with td_u:
+        target_unit_label = st.selectbox("target unit",
+            ["秒 (seconds)", "分鐘 (minutes)", "小時 (hours)"], index=1,
+            label_visibility="collapsed")
     target_unit = target_unit_label.split(" ")[0]
     target_seconds = target_value * {"秒": 1, "分鐘": 60, "小時": 3600}[target_unit]
     st.caption(f"= {target_seconds:g} 秒")
 
-    st.markdown("**Padding**(每個 cut 邊界外擴的緩衝秒數,避免聽感被切掉)")
-    pad_n_col, pad_u_col = st.columns([3, 1])
-    with pad_n_col:
-        padding = st.number_input(
-            "padding value", value=0.5, step=0.1, min_value=0.0,
-            label_visibility="collapsed",
-        )
-    with pad_u_col:
-        st.markdown("&nbsp;")
-        st.markdown("**秒 (s)**")
+    st.markdown("**Padding**(每個 cut 邊界外擴的緩衝秒數)")
+    pad_n, pad_u = st.columns([3, 1])
+    with pad_n:
+        padding = st.number_input("padding value",
+            value=0.5, step=0.1, min_value=0.0,
+            label_visibility="collapsed")
+    with pad_u:
+        st.markdown("<div style='padding-top:0.5em'><b>秒</b></div>",
+            unsafe_allow_html=True)
 
     st.divider()
 
-    # ----- Start button -----
-    if st.button("▶️ 開始討論", type="primary", use_container_width=True):
+    # ----- Start -----
+    btn_label = "▶️ 開始" + ("(AI 直接掃描)" if is_seq else "(進入主題選擇)")
+    if st.button(btn_label, type="primary", use_container_width=True):
         errors = []
-        if not uploaded:
-            errors.append("請先上傳 SRT 檔案")
-        if not api_key:
-            errors.append("請在左側輸入 Anthropic API key")
+        if not uploaded: errors.append("請先上傳 SRT 檔案")
+        if not api_key: errors.append("請在左側輸入 Anthropic API key")
         if df == "DF" and fps not in ("29.97", "59.94"):
             errors.append(f"DF 僅支援 29.97 / 59.94 fps,目前選的是 {fps}")
         if errors:
-            for e in errors:
-                st.error(e)
+            for e in errors: st.error(e)
             return
 
         try:
@@ -392,175 +528,283 @@ def render_setup():
             "audio_depth": int(audio_depth),
             "audio_channels": int(audio_channels),
             "a_path": a_path,
-            "a_srt_starts_at": (
-                float(a_srt_starts_seconds) + float(a_srt_starts_frames) / fps_int
-            ),
-            "multicam_enabled": multicam_enabled and mode == "highlight",
+            "a_srt_starts_at": (a_m * 60) + a_s + (a_f / fps_int),
+            "multicam_enabled": multicam_enabled and not is_seq,
             "b_path": b_path,
-            "b_delay_seconds": int(b_delay_seconds),
-            "b_delay_frames": int(b_delay_frames),
+            "b_delay_seconds": int(b_m * 60 + b_s),
+            "b_delay_frames": int(b_f),
             "target_duration_seconds": float(target_seconds),
             "padding": float(padding),
         }
         st.session_state["stage"] = (
-            "block_builder" if mode == "highlight" else "preset_pick"
+            "preset_pick" if is_seq else "theme_pick"
         )
         st.rerun()
 
 
 # ============================================================================
-# Stage: block builder (highlight)
+# Stage: theme_pick (highlight)
 # ============================================================================
 
-def fetch_blocks(prev=None):
+def fetch_themes(prev=None):
     c = st.session_state["frozen_config"]
     user_msg = (
         f"Target length: {c['target_duration_seconds']:.0f} seconds\n"
         f"Purpose: {c['purpose'] or '(unspecified)'}\n"
-        f"Camera availability: {'A+B (multicam)' if c['multicam_enabled'] else 'A only'}\n\n"
+        f"Camera: {'A+B (multicam)' if c['multicam_enabled'] else 'A only'}\n\n"
         f"SRT:\n{c['srt_text']}"
     )
     if prev:
-        names = ", ".join(b.get("name", "?") for b in prev)
-        user_msg += (f"\n\nPreviously proposed blocks: {names}. "
-                     f"Propose DIFFERENT blocks (different cue ranges and angles).")
-    return extract_json(call_claude(api_key, llm_model, SYS_BLOCKS, user_msg)).get("blocks", [])
+        names = ", ".join(t.get("name", "?") for t in prev)
+        user_msg += f"\n\nPreviously proposed themes: {names}. Propose DIFFERENT angles."
+    return extract_json(call_claude(api_key, llm_model, SYS_THEMES, user_msg)).get("themes", [])
 
 
-def block_key(b):
-    return f"{b.get('cue_range', '?')}::{b.get('name', '?')}"
-
-
-def render_block_builder():
+def render_theme_pick():
     c = st.session_state["frozen_config"]
+    st.markdown(f"### 選擇敘事主題 · *目標 {c['target_duration_seconds']:.0f}s*")
 
-    if st.session_state["available_blocks"] is None:
-        with st.spinner("🤖 正在從 SRT 產生內容片段..."):
+    if st.session_state["themes"] is None:
+        with st.spinner("🤖 正在從 SRT 產生主題提案..."):
             try:
-                st.session_state["available_blocks"] = fetch_blocks()
+                st.session_state["themes"] = fetch_themes()
             except Exception as e:
                 st.error(f"LLM 呼叫失敗:{e}")
                 if st.button("↻ 重試"):
-                    st.session_state["available_blocks"] = None; st.rerun()
+                    st.session_state["themes"] = None; st.rerun()
                 return
 
-    available = st.session_state["available_blocks"]
-    selected = st.session_state["selected_blocks"]
-    selected_keys = {block_key(b) for b in selected}
+    themes = st.session_state["themes"]
+    if not themes:
+        st.warning("沒有回傳任何主題")
+        if st.button("↻ 重試"):
+            st.session_state["themes"] = None; st.rerun()
+        return
 
-    left, right = st.columns([1, 1])
+    for i, t in enumerate(themes):
+        with st.container(border=True):
+            head_l, head_r = st.columns([4, 1])
+            with head_l:
+                st.markdown(
+                    f"**{t.get('name', f'主題 {i+1}')}** · "
+                    f"~{t.get('estimated_length_seconds', '?')}s"
+                )
+                st.markdown(f"💬 *“{t.get('hook_quote', '')}”*")
+                st.caption(f"📐 {t.get('angle', '')}")
+                st.caption(f"🎯 {t.get('selling_point', '')}")
+                if t.get("audience_fit"):
+                    st.caption(f"👥 {t['audience_fit']}")
+            with head_r:
+                if st.button("✓ 用這個", type="primary",
+                             key=f"theme_{i}", use_container_width=True):
+                    st.session_state["chosen_theme"] = t
+                    st.session_state["block_pool"] = None
+                    st.session_state["selected_ids"] = []
+                    st.session_state["regen_blocks"] = 0
+                    st.session_state["stage"] = "block_builder"
+                    st.rerun()
 
-    # --- Available blocks ---
-    with left:
-        st.markdown("### 📚 可用片段")
-        st.caption(f"LLM 提案了 {len(available)} 個。點 ➕ 加入右側剪輯。")
-        for i, b in enumerate(available):
-            already = block_key(b) in selected_keys
-            with st.container(border=True):
-                row = st.columns([4, 1])
-                with row[0]:
-                    st.markdown(
-                        f"**{b.get('name', f'片段 {i+1}')}** "
-                        f"`[{b.get('role', '')}]` "
-                        f"~{b.get('estimated_length_seconds', '?')}s"
-                    )
-                    st.markdown(f"💬 *“{b.get('hook_quote', '')}”*")
-                    st.caption(
-                        f"cue 範圍 `{b.get('cue_range')}` · "
-                        f"建議鏡位 `{b.get('suggested_cam', 'A')}` · "
-                        f"{b.get('selling_point', '')}"
-                    )
-                with row[1]:
-                    if already:
-                        st.button("✓ 已加入", key=f"add_{i}",
-                            disabled=True, use_container_width=True)
-                    else:
-                        if st.button("➕ 加入", key=f"add_{i}",
-                            type="primary", use_container_width=True):
-                            new_block = dict(b)
-                            new_block["cam"] = (
-                                b.get("suggested_cam", "A")
-                                if c["multicam_enabled"] else "A"
-                            )
-                            selected.append(new_block)
-                            st.rerun()
-
-        st.divider()
-        if st.button("↻ 全部重新生成片段(不滿意這些)",
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("← 回到前置設定", use_container_width=True):
+            st.session_state["stage"] = "setup_highlight"
+            st.session_state["themes"] = None
+            st.rerun()
+    with col2:
+        if st.button("↻ 全部重新生成主題",
                      type="secondary", use_container_width=True):
-            with st.spinner("正在用不同角度重新生成..."):
+            with st.spinner("重新產生不同角度的主題..."):
                 try:
-                    st.session_state["available_blocks"] = fetch_blocks(prev=available)
-                    st.session_state["regen_blocks"] += 1
+                    st.session_state["themes"] = fetch_themes(prev=themes)
+                    st.session_state["regen_themes"] += 1
                 except Exception as e:
                     st.error(f"重新生成失敗:{e}")
             st.rerun()
 
-    # --- Selected blocks (ordered) ---
-    with right:
-        total_secs = sum(b.get("estimated_length_seconds", 0) for b in selected)
-        st.markdown(
-            f"### 🎬 你的剪輯 · {len(selected)} 段 · ~{total_secs} 秒"
-        )
-        target_sec = c.get("target_duration_seconds") or None
-        if target_sec:
-            diff = total_secs - target_sec
-            tag = "🎯" if abs(diff) < 5 else ("⚠️" if diff > 0 else "ℹ️")
-            st.caption(f"{tag} 目標 {target_sec:.0f}s · "
-                       f"差距 {diff:+.1f}s")
 
-        if not selected:
-            st.info("還沒選任何片段——從左側「📚 可用片段」按 ➕ 加入。")
-        else:
-            for i, b in enumerate(selected):
-                with st.container(border=True):
-                    head = st.columns([0.4, 3.5, 0.7, 0.4, 0.4, 0.4])
-                    head[0].markdown(f"**{i+1}**")
-                    head[1].markdown(
-                        f"**{b.get('name')}** `[{b.get('role', '')}]` · "
-                        f"~{b.get('estimated_length_seconds', '?')}s\n\n"
-                        f"💬 *{b.get('hook_quote', '')[:50]}*"
-                    )
-                    if c["multicam_enabled"]:
-                        new_cam = head[2].selectbox(
-                            "cam", ["A", "B"],
-                            index=(0 if b.get("cam", "A") == "A" else 1),
-                            key=f"cam_{i}", label_visibility="collapsed",
-                        )
-                        b["cam"] = new_cam
-                    else:
-                        head[2].markdown("`A`")
+# ============================================================================
+# Stage: block_builder (highlight, drag-drop)
+# ============================================================================
 
-                    if head[3].button("⬆️", key=f"up_{i}", disabled=(i == 0),
-                                       help="上移"):
-                        selected[i], selected[i-1] = selected[i-1], selected[i]
-                        st.rerun()
-                    if head[4].button("⬇️", key=f"dn_{i}",
-                                       disabled=(i == len(selected) - 1),
-                                       help="下移"):
-                        selected[i], selected[i+1] = selected[i+1], selected[i]
-                        st.rerun()
-                    if head[5].button("🗑️", key=f"del_{i}", help="移除"):
-                        selected.pop(i)
-                        st.rerun()
+def fetch_blocks_for_theme(theme, prev=None):
+    c = st.session_state["frozen_config"]
+    cam_desc = "A+B (multicam)" if c["multicam_enabled"] else "A only"
+    user_msg = (
+        f"Chosen theme:\n{json.dumps(theme, ensure_ascii=False, indent=2)}\n\n"
+        f"Camera: {cam_desc}\n"
+        f"Target length: {c['target_duration_seconds']:.0f} seconds\n\n"
+        f"SRT:\n{c['srt_text']}"
+    )
+    if prev:
+        names = ", ".join(b.get("name", "?") for b in prev.values())
+        user_msg += (f"\n\nPreviously proposed blocks: {names}. "
+                     f"Propose DIFFERENT blocks (different cue ranges and angles).")
+    resp = extract_json(call_claude(api_key, llm_model, SYS_BLOCKS, user_msg))
+    blocks = resp.get("blocks", [])
+    recommended = resp.get("recommended_assembly", [])
+    blocks_by_id = {b["id"]: b for b in blocks if "id" in b}
+    return blocks_by_id, recommended
 
-            st.caption("提示:目前不支援拖拉,請用 ⬆️⬇️ 調整順序。")
 
-        st.divider()
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("← 回到前置設定", use_container_width=True):
-                reset_workflow(); st.rerun()
-        with col2:
-            ok = len(selected) > 0
-            if st.button("→ 進入確認步驟", type="primary",
-                         use_container_width=True, disabled=not ok):
-                st.session_state["stage"] = "review"
-                st.rerun()
+def render_block_builder():
+    try:
+        from streamlit_sortables import sort_items
+    except ImportError:
+        st.error("尚未安裝 `streamlit-sortables`,請等待 rebuild 或重整。")
+        return
+
+    c = st.session_state["frozen_config"]
+    theme = st.session_state["chosen_theme"]
+
+    # First-time fetch: blocks + initial recommended assembly
+    if st.session_state["block_pool"] is None:
+        with st.spinner("🤖 正在依主題產生分類好的素材庫和推薦版本..."):
+            try:
+                pool, recommended = fetch_blocks_for_theme(theme)
+                st.session_state["block_pool"] = pool
+                st.session_state["selected_ids"] = [
+                    rid for rid in recommended if rid in pool
+                ]
+            except Exception as e:
+                st.error(f"LLM 呼叫失敗:{e}")
+                if st.button("↻ 重試"):
+                    st.session_state["block_pool"] = None; st.rerun()
+                return
+
+    pool = st.session_state["block_pool"]
+    selected_ids = st.session_state["selected_ids"]
+
+    # Header
+    st.markdown(f"### 組合片段 · *{theme.get('name')}*")
+    st.caption(f"💬 *“{theme.get('hook_quote', '')}”*  ·  "
+               f"📐 {theme.get('angle', '')}")
+
+    # Total length tracker
+    total_secs = sum(
+        pool[bid].get("estimated_length_seconds", 0) for bid in selected_ids if bid in pool
+    )
+    target_sec = c.get("target_duration_seconds") or None
+    diff_text = ""
+    if target_sec:
+        diff = total_secs - target_sec
+        tag = "🎯" if abs(diff) < 5 else ("⚠️ 超過" if diff > 0 else "ℹ️ 不足")
+        diff_text = f" · {tag} 目標 {target_sec:.0f}s,差距 {diff:+.1f}s"
+    st.markdown(
+        f"#### 🎬 你的剪輯 · {len(selected_ids)} 段 · ~{total_secs}s{diff_text}"
+    )
+
+    # Build container structure for sortable
+    # Container 0: 你的剪輯
+    # Container 1..N: per-role pools (only blocks NOT in selected_ids)
+    selected_set = set(selected_ids)
+    blocks_by_role = {role: [] for role in ROLE_ORDER}
+    for bid, b in pool.items():
+        if bid in selected_set:
+            continue
+        role = b.get("narrative_role", "context")
+        blocks_by_role.setdefault(role, []).append(bid)
+
+    # Each container's items are display labels (sortable accepts strings)
+    containers = [{
+        "header": f"🎬 你的剪輯（依故事弧排序）",
+        "items": [block_to_label(pool[bid]) for bid in selected_ids if bid in pool],
+    }]
+    for role in ROLE_ORDER:
+        info = NARRATIVE_ROLES[role]
+        ids = blocks_by_role.get(role, [])
+        if not ids:
+            continue
+        containers.append({
+            "header": f"{info['emoji']} {info['label_zh']}",
+            "items": [block_to_label(pool[bid]) for bid in ids],
+        })
+
+    st.caption(
+        "拖拉卡片在容器之間移動,或在「你的剪輯」內重新排序。"
+        "下方分類是「在新影片中扮演的角色」,不是原 SRT 的順序。"
+    )
+
+    # Render sortable
+    sorted_containers = sort_items(
+        containers, multi_containers=True, direction="vertical",
+        key=f"sortable_{st.session_state['regen_blocks']}",
+    )
+
+    # Parse back: first container = new selected_ids (in order)
+    new_selected_ids = []
+    for label in sorted_containers[0]["items"]:
+        bid = parse_label_to_id(label, pool)
+        if bid and bid in pool:
+            new_selected_ids.append(bid)
+    st.session_state["selected_ids"] = new_selected_ids
+
+    # Show selected detail summary
+    if new_selected_ids:
+        with st.expander(f"📖 你的剪輯 — 詳細內容 ({len(new_selected_ids)} 段)", expanded=False):
+            for i, bid in enumerate(new_selected_ids):
+                if bid not in pool: continue
+                b = pool[bid]
+                role_info = NARRATIVE_ROLES.get(b.get("narrative_role", ""), {})
+                st.markdown(
+                    f"**{i+1}. {role_info.get('emoji', '')} {b.get('name')}** · "
+                    f"`{b.get('narrative_role', '?')}` · "
+                    f"~{b.get('estimated_length_seconds', '?')}s"
+                )
+                st.caption(f"💬 「{b.get('hook_quote', '')}」")
+                st.caption(f"🎯 {b.get('selling_point', '')} · "
+                           f"cues `{b.get('cue_range')}` · "
+                           f"建議鏡位 `{b.get('suggested_cam', 'A')}`")
+
+    st.divider()
+
+    # Per-cut camera override (multicam only)
+    if c["multicam_enabled"] and new_selected_ids:
+        with st.expander("🎥 調整每段鏡位 (A / B)"):
+            for i, bid in enumerate(new_selected_ids):
+                if bid not in pool: continue
+                b = pool[bid]
+                cur_cam = b.get("cam") or b.get("suggested_cam", "A")
+                new_cam = st.radio(
+                    f"{i+1}. {b.get('name')} (建議 `{b.get('suggested_cam', 'A')}`)",
+                    ["A", "B"], index=(0 if cur_cam == "A" else 1),
+                    horizontal=True, key=f"cam_{bid}",
+                )
+                pool[bid]["cam"] = new_cam
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("← 換主題", use_container_width=True):
+            st.session_state["stage"] = "theme_pick"
+            st.session_state["block_pool"] = None
+            st.session_state["selected_ids"] = []
+            st.rerun()
+    with col2:
+        if st.button("↻ 重新生成素材庫(保留你已選的)",
+                     type="secondary", use_container_width=True):
+            with st.spinner("重新產生未選擇的素材..."):
+                try:
+                    new_pool, _ = fetch_blocks_for_theme(theme, prev=pool)
+                    # Merge: keep user-selected blocks (overwrite pool entries
+                    # for those ids if absent from new pool)
+                    for bid in selected_ids:
+                        if bid in pool and bid not in new_pool:
+                            new_pool[bid] = pool[bid]
+                    st.session_state["block_pool"] = new_pool
+                    st.session_state["regen_blocks"] += 1
+                except Exception as e:
+                    st.error(f"重新生成失敗:{e}")
+            st.rerun()
+    with col3:
+        ok = len(new_selected_ids) > 0
+        if st.button("→ 進入確認步驟", type="primary",
+                     use_container_width=True, disabled=not ok):
+            st.session_state["stage"] = "review"
+            st.rerun()
 
 
 # ============================================================================
-# Stage: preset pick (sequential)
+# Stage: preset_pick (sequential)
 # ============================================================================
 
 def fetch_presets(prev=None):
@@ -577,7 +821,8 @@ def fetch_presets(prev=None):
 
 def render_preset_pick():
     st.markdown("### 選擇移除程度")
-    st.caption("Sequential 模式保持 SRT 原順序,只移除指定的 cue。")
+    st.caption("Sequential 模式保持 SRT 原順序,只移除指定的 cue。"
+               "AI 已自動分析 SRT,以下三個方案保守度遞增。")
 
     if st.session_state["presets"] is None:
         with st.spinner("🤖 正在掃描 SRT 找移除候選..."):
@@ -624,7 +869,9 @@ def render_preset_pick():
     col1, col2 = st.columns(2)
     with col1:
         if st.button("← 回到前置設定", use_container_width=True):
-            reset_workflow(); st.rerun()
+            st.session_state["stage"] = "setup_sequential"
+            st.session_state["presets"] = None
+            st.rerun()
     with col2:
         if st.button("↻ 全部重新生成 presets",
                      type="secondary", use_container_width=True):
@@ -681,20 +928,25 @@ def render_review():
     st.markdown("### 最終確認")
 
     if mode == "highlight":
-        selected = st.session_state["selected_blocks"]
-        if not selected:
+        pool = st.session_state["block_pool"] or {}
+        sel_ids = st.session_state["selected_ids"]
+        if not sel_ids:
             st.error("還沒選任何片段,請回上一步。")
             if st.button("← 返回"):
                 st.session_state["stage"] = "block_builder"; st.rerun()
             return
-        rows = [{
-            "#": i,
-            "鏡位": b.get("cam", "A"),
-            "cues": b.get("cue_range"),
-            "role": b.get("role", ""),
-            "片段名稱": b.get("name", ""),
-            "預估長度(秒)": b.get("estimated_length_seconds", "?"),
-        } for i, b in enumerate(selected)]
+        rows = []
+        for i, bid in enumerate(sel_ids):
+            if bid not in pool: continue
+            b = pool[bid]
+            rows.append({
+                "#": i,
+                "鏡位": b.get("cam") or b.get("suggested_cam", "A"),
+                "cues": b.get("cue_range"),
+                "narrative_role": b.get("narrative_role", ""),
+                "片段名稱": b.get("name", ""),
+                "預估長度(秒)": b.get("estimated_length_seconds", "?"),
+            })
         st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         p = st.session_state["chosen_preset"]
@@ -733,11 +985,8 @@ def build_spec():
                       "channels": c["audio_channels"]},
         },
         "cameras": {
-            "A": {
-                "file": "A_camera",
-                "path": c["a_path"],
-                "srt_starts_at_source_seconds": c["a_srt_starts_at"],
-            },
+            "A": {"file": "A_camera", "path": c["a_path"],
+                  "srt_starts_at_source_seconds": c["a_srt_starts_at"]},
         },
         "settings": {
             "padding": c["padding"],
@@ -747,17 +996,21 @@ def build_spec():
         "mode": c["mode"],
     }
     if c["multicam_enabled"]:
-        spec["cameras"]["B"] = {
-            "file": "B_camera",
-            "path": c["b_path"], "delay_from_a": b_delay_str,
-        }
+        spec["cameras"]["B"] = {"file": "B_camera",
+            "path": c["b_path"], "delay_from_a": b_delay_str}
+
     if c["mode"] == "highlight":
-        spec["cuts"] = [{
-            "cam": b.get("cam", "A"),
-            "cues": b.get("cue_range"),
-            "role": b.get("role", ""),
-            "label": b.get("name", ""),
-        } for b in st.session_state["selected_blocks"]]
+        pool = st.session_state["block_pool"] or {}
+        spec["cuts"] = []
+        for bid in st.session_state["selected_ids"]:
+            if bid not in pool: continue
+            b = pool[bid]
+            spec["cuts"].append({
+                "cam": b.get("cam") or b.get("suggested_cam", "A"),
+                "cues": b.get("cue_range"),
+                "role": b.get("narrative_role", ""),
+                "label": b.get("name", ""),
+            })
     else:
         flags = st.session_state["remove_keep_flags"]
         p = st.session_state["chosen_preset"]
@@ -837,8 +1090,12 @@ def generate_xml():
 # ============================================================================
 
 stage = st.session_state["stage"]
-if stage == "setup":
+if stage == "mode_select":
+    render_mode_select()
+elif stage in ("setup_highlight", "setup_sequential"):
     render_setup()
+elif stage == "theme_pick":
+    render_theme_pick()
 elif stage == "block_builder":
     render_block_builder()
 elif stage == "preset_pick":
