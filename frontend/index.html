@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8" />
+<title>block-sorter</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+                 "PingFang TC", "Microsoft JhengHei", sans-serif;
+    padding: 8px 4px;
+    color: #1f1f1f;
+    background: transparent;
+  }
+  .container {
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 14px;
+    background: #fafafa;
+  }
+  .container.assembly {
+    background: #fff8e1;
+    border-color: #ffb300;
+    border-width: 2px;
+  }
+  .header {
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .header .meta { font-weight: 400; color: #666; font-size: 12px; }
+  .items {
+    min-height: 50px;
+    border: 2px dashed transparent;
+    border-radius: 6px;
+    padding: 4px;
+    transition: border-color 0.1s;
+  }
+  .items.empty { border-color: #ddd; }
+  .items.horizontal {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .items.vertical {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .item {
+    padding: 8px 10px;
+    background: white;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    cursor: grab;
+    font-size: 13px;
+    line-height: 1.4;
+    user-select: none;
+    transition: box-shadow 0.1s, transform 0.1s;
+  }
+  .item:hover {
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+    border-color: #888;
+  }
+  .item:active { cursor: grabbing; }
+  .item.horizontal { width: 200px; flex-shrink: 0; }
+  .item .role {
+    display: inline-block;
+    font-size: 10px;
+    color: #888;
+    background: #eee;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+  }
+  .item .name { font-weight: 600; }
+  .item .quote { color: #555; font-size: 11px; margin-top: 3px; font-style: italic; }
+  .item .secs {
+    font-size: 11px; color: #999; float: right;
+  }
+  .ghost {
+    opacity: 0.4;
+    background: #fffde7;
+  }
+  .drag {
+    cursor: grabbing !important;
+    box-shadow: 0 6px 14px rgba(0,0,0,0.18);
+  }
+  .row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .row .container { margin-bottom: 0; }
+  .row .container .header { font-size: 13px; }
+  .empty-msg {
+    color: #999;
+    font-size: 12px;
+    padding: 8px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script>
+"use strict";
+
+// ====== Minimal Streamlit bridge (vanilla, no external lib needed) ======
+const RENDER_EVT = "streamlit:render";
+const READY_EVT = "streamlit:componentReady";
+const SET_VALUE_EVT = "streamlit:setComponentValue";
+const SET_HEIGHT_EVT = "streamlit:setFrameHeight";
+
+function send(type, payload = {}) {
+  window.parent.postMessage(
+    Object.assign({ isStreamlitMessage: true, type }, payload),
+    "*"
+  );
+}
+function setReady() { send(READY_EVT, { apiVersion: 1 }); }
+function setValue(v) { send(SET_VALUE_EVT, { value: v, dataType: "json" }); }
+function setHeight(h) { send(SET_HEIGHT_EVT, { height: h ?? document.documentElement.scrollHeight }); }
+
+// ====== State ======
+let lastArgs = null;
+let lastResultJson = null;
+
+function emitState() {
+  // Read DOM order across all .items lists, by container index
+  const lists = document.querySelectorAll(".items");
+  const result = [];
+  lists.forEach((list) => {
+    const ids = Array.from(list.querySelectorAll(".item")).map((el) => el.dataset.id);
+    result.push(ids);
+  });
+  const j = JSON.stringify(result);
+  if (j !== lastResultJson) {
+    lastResultJson = j;
+    setValue(result);
+  }
+}
+
+// ====== Rendering ======
+function makeItem(item, layout) {
+  const el = document.createElement("div");
+  el.className = "item " + layout;
+  el.dataset.id = item.id;
+  if (item.html) {
+    el.innerHTML = item.html;
+  } else {
+    const role = item.role ? `<span class="role">${escape(item.role)}</span>` : "";
+    const secs = item.secs != null ? `<span class="secs">~${escape(item.secs)}s</span>` : "";
+    const name = `<span class="name">${escape(item.name || "?")}</span>`;
+    const quote = item.quote ? `<div class="quote">「${escape(item.quote.slice(0, 36))}」</div>` : "";
+    el.innerHTML = `<div>${role}${name}${secs}</div>${quote}`;
+  }
+  return el;
+}
+
+function escape(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"]/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+  })[c]);
+}
+
+function makeContainer(c, layout, isAssembly) {
+  const div = document.createElement("div");
+  div.className = "container" + (isAssembly ? " assembly" : "");
+
+  const header = document.createElement("div");
+  header.className = "header";
+  const titleSpan = document.createElement("span");
+  titleSpan.innerHTML = c.header || "";
+  header.appendChild(titleSpan);
+  if (c.meta) {
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.innerHTML = c.meta;
+    header.appendChild(meta);
+  }
+  div.appendChild(header);
+
+  const itemsDiv = document.createElement("div");
+  itemsDiv.className = "items " + layout;
+  if (!c.items || c.items.length === 0) {
+    itemsDiv.classList.add("empty");
+    const empty = document.createElement("div");
+    empty.className = "empty-msg";
+    empty.textContent = c.empty_msg || "（拖曳卡片到這裡）";
+    itemsDiv.appendChild(empty);
+  } else {
+    c.items.forEach((item) => itemsDiv.appendChild(makeItem(item, layout)));
+  }
+  div.appendChild(itemsDiv);
+  return { wrapper: div, list: itemsDiv };
+}
+
+function render(args) {
+  lastArgs = args;
+  lastResultJson = null;  // force resend on first state read
+
+  const containers = args.containers || [];
+  const root = document.getElementById("root");
+  root.innerHTML = "";
+
+  // First container: assembly (full-width, horizontal items)
+  // Subsequent containers: laid out as a responsive grid (categories)
+  let rowDiv = null;
+  const itemLists = [];
+
+  containers.forEach((c, idx) => {
+    const isAssembly = idx === 0;
+    const layout = isAssembly ? "horizontal" : "vertical";
+    const { wrapper, list } = makeContainer(c, layout, isAssembly);
+    itemLists.push(list);
+
+    if (isAssembly) {
+      root.appendChild(wrapper);
+    } else {
+      if (!rowDiv) {
+        rowDiv = document.createElement("div");
+        rowDiv.className = "row";
+        root.appendChild(rowDiv);
+      }
+      rowDiv.appendChild(wrapper);
+    }
+  });
+
+  // Setup Sortable on each list, all in same group => cross-container drag works
+  itemLists.forEach((list) => {
+    new Sortable(list, {
+      group: "blocks",
+      animation: 160,
+      ghostClass: "ghost",
+      dragClass: "drag",
+      forceFallback: true,
+      fallbackOnBody: true,
+      swapThreshold: 0.6,
+      onAdd: () => { fixEmptyState(list); emitState(); },
+      onRemove: () => { fixEmptyState(list); emitState(); },
+      onUpdate: emitState,
+    });
+  });
+
+  // Initial state push (so Python knows the initial ordering)
+  emitState();
+  setHeight();
+}
+
+function fixEmptyState(list) {
+  // Remove "empty" placeholder if items exist; add it back if list emptied
+  const items = list.querySelectorAll(".item");
+  const msg = list.querySelector(".empty-msg");
+  if (items.length === 0) {
+    list.classList.add("empty");
+    if (!msg) {
+      const empty = document.createElement("div");
+      empty.className = "empty-msg";
+      empty.textContent = "（拖曳卡片到這裡）";
+      list.appendChild(empty);
+    }
+  } else {
+    list.classList.remove("empty");
+    if (msg) msg.remove();
+  }
+}
+
+// ====== Streamlit event ======
+window.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== RENDER_EVT) return;
+  render(event.data.args || {});
+});
+
+setReady();
+// Ensure height is reasonable on first paint
+setHeight(400);
+</script>
+</body>
+</html>

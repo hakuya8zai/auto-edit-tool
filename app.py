@@ -20,8 +20,33 @@ import uuid
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import srt2xml
+
+# Custom drag-drop component (frontend/index.html)
+_FRONTEND_DIR = Path(__file__).parent / "frontend"
+_block_sorter_component = components.declare_component(
+    "block_sorter", path=str(_FRONTEND_DIR)
+)
+
+
+def block_sorter(containers, key=None):
+    """Custom drag-drop component.
+
+    containers: list of dicts:
+      {
+        "header": "...html...",
+        "meta": "...html..." (optional),
+        "items": [{"id": str, "name": str, "quote": str, "role": str, "secs": int}, ...]
+      }
+    First container is rendered as the "assembly" (full-width, horizontal items).
+    Subsequent containers are laid out as a responsive grid of category columns.
+
+    Returns: list[list[str]] — for each container, the ordered list of item ids
+    after user dragging. None on first render before user interaction.
+    """
+    return _block_sorter_component(containers=containers, key=key, default=None)
 
 st.set_page_config(page_title="SRT → Premiere XML", page_icon="🎬", layout="wide")
 
@@ -648,12 +673,6 @@ def fetch_blocks_for_theme(theme, prev=None):
 
 
 def render_block_builder():
-    try:
-        from streamlit_sortables import sort_items
-    except ImportError:
-        st.error("尚未安裝 `streamlit-sortables`,請等待 rebuild 或重整。")
-        return
-
     c = st.session_state["frozen_config"]
     theme = st.session_state["chosen_theme"]
 
@@ -694,9 +713,12 @@ def render_block_builder():
         f"#### 🎬 你的剪輯 · {len(selected_ids)} 段 · ~{total_secs}s{diff_text}"
     )
 
-    # Build container structure for sortable
-    # Container 0: 你的剪輯
-    # Container 1..N: per-role pools (only blocks NOT in selected_ids)
+    st.caption(
+        "拖曳卡片在容器之間移動。最上方「你的剪輯」是橫排,可以左右拖拉換順序。"
+        "下方按「在新影片中扮演的角色」分類,不是原 SRT 的順序。"
+    )
+
+    # Build per-role categorization (only blocks NOT in selected_ids)
     selected_set = set(selected_ids)
     blocks_by_role = {role: [] for role in ROLE_ORDER}
     for bid, b in pool.items():
@@ -705,39 +727,44 @@ def render_block_builder():
         role = b.get("narrative_role", "context")
         blocks_by_role.setdefault(role, []).append(bid)
 
-    # Each container's items are display labels (sortable accepts strings)
+    def make_item(b):
+        info = NARRATIVE_ROLES.get(b.get("narrative_role", ""), {})
+        return {
+            "id": b["id"],
+            "name": b.get("name", ""),
+            "quote": b.get("hook_quote", ""),
+            "role": info.get("emoji", "") + " " + info.get("label_zh", ""),
+            "secs": b.get("estimated_length_seconds", "?"),
+        }
+
     containers = [{
-        "header": f"🎬 你的剪輯（依故事弧排序）",
-        "items": [block_to_label(pool[bid]) for bid in selected_ids if bid in pool],
+        "header": "🎬 你的剪輯(依故事弧排序,左到右)",
+        "meta": f"{len(selected_ids)} 段 · ~{total_secs}s",
+        "items": [make_item(pool[bid]) for bid in selected_ids if bid in pool],
+        "empty_msg": "(從下方分類拖曳卡片到這裡開始組合)",
     }]
     for role in ROLE_ORDER:
         info = NARRATIVE_ROLES[role]
         ids = blocks_by_role.get(role, [])
-        if not ids:
-            continue
         containers.append({
             "header": f"{info['emoji']} {info['label_zh']}",
-            "items": [block_to_label(pool[bid]) for bid in ids],
+            "meta": f"{len(ids)}",
+            "items": [make_item(pool[bid]) for bid in ids],
+            "empty_msg": "(空)",
         })
 
-    st.caption(
-        "拖拉卡片在容器之間移動,或在「你的剪輯」內重新排序。"
-        "下方分類是「在新影片中扮演的角色」,不是原 SRT 的順序。"
+    # Render custom component
+    result = block_sorter(
+        containers,
+        key=f"sorter_{st.session_state['regen_blocks']}",
     )
 
-    # Render sortable
-    sorted_containers = sort_items(
-        containers, multi_containers=True, direction="vertical",
-        key=f"sortable_{st.session_state['regen_blocks']}",
-    )
+    # Parse result: list of lists of ids, one per container
+    if result and isinstance(result, list) and len(result) > 0:
+        new_selected_ids = [bid for bid in result[0] if bid in pool]
+        st.session_state["selected_ids"] = new_selected_ids
 
-    # Parse back: first container = new selected_ids (in order)
-    new_selected_ids = []
-    for label in sorted_containers[0]["items"]:
-        bid = parse_label_to_id(label, pool)
-        if bid and bid in pool:
-            new_selected_ids.append(bid)
-    st.session_state["selected_ids"] = new_selected_ids
+    new_selected_ids = st.session_state["selected_ids"]
 
     # Show selected detail summary
     if new_selected_ids:
