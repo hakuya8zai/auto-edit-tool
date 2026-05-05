@@ -80,13 +80,8 @@
   }
   .item .name { font-weight: 600; }
   .item .quote { color: #555; font-size: 11px; margin-top: 3px; font-style: italic; }
-  .item .secs {
-    font-size: 11px; color: #999; float: right;
-  }
-  .ghost {
-    opacity: 0.4;
-    background: #fffde7;
-  }
+  .item .secs { font-size: 11px; color: #999; float: right; }
+  .ghost { opacity: 0.4; background: #fffde7; }
   .drag {
     cursor: grabbing !important;
     box-shadow: 0 6px 14px rgba(0,0,0,0.18);
@@ -114,7 +109,7 @@
 <script>
 "use strict";
 
-// ====== Minimal Streamlit bridge (vanilla, no external lib needed) ======
+// ====== Streamlit bridge ======
 const RENDER_EVT = "streamlit:render";
 const READY_EVT = "streamlit:componentReady";
 const SET_VALUE_EVT = "streamlit:setComponentValue";
@@ -122,30 +117,46 @@ const SET_HEIGHT_EVT = "streamlit:setFrameHeight";
 
 function send(type, payload = {}) {
   window.parent.postMessage(
-    Object.assign({ isStreamlitMessage: true, type }, payload),
-    "*"
+    Object.assign({ isStreamlitMessage: true, type }, payload), "*"
   );
 }
 function setReady() { send(READY_EVT, { apiVersion: 1 }); }
 function setValue(v) { send(SET_VALUE_EVT, { value: v, dataType: "json" }); }
-function setHeight(h) { send(SET_HEIGHT_EVT, { height: h ?? document.documentElement.scrollHeight }); }
+function setHeight(h) {
+  send(SET_HEIGHT_EVT, { height: h ?? document.documentElement.scrollHeight });
+}
 
-// ====== State ======
-let lastArgs = null;
-let lastResultJson = null;
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s).replace(/[&<>"]/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+  })[c]);
+}
+
+// ====== State (persisted across renders) ======
+let sortableInstances = [];
+let lastEmittedFingerprint = null;   // what we last reported to Streamlit
+let lastRenderedFingerprint = null;  // what's currently in the DOM
+
+function readDomState() {
+  const lists = document.querySelectorAll(".items");
+  return Array.from(lists).map((list) =>
+    Array.from(list.querySelectorAll(".item")).map((el) => el.dataset.id)
+  );
+}
+
+function fingerprint(state) {
+  return JSON.stringify(state);
+}
 
 function emitState() {
-  // Read DOM order across all .items lists, by container index
-  const lists = document.querySelectorAll(".items");
-  const result = [];
-  lists.forEach((list) => {
-    const ids = Array.from(list.querySelectorAll(".item")).map((el) => el.dataset.id);
-    result.push(ids);
-  });
-  const j = JSON.stringify(result);
-  if (j !== lastResultJson) {
-    lastResultJson = j;
-    setValue(result);
+  const state = readDomState();
+  const fp = fingerprint(state);
+  // Only emit if state actually changed since last emit/render
+  if (fp !== lastEmittedFingerprint) {
+    lastEmittedFingerprint = fp;
+    lastRenderedFingerprint = fp;
+    setValue(state);
   }
 }
 
@@ -157,20 +168,16 @@ function makeItem(item, layout) {
   if (item.html) {
     el.innerHTML = item.html;
   } else {
-    const role = item.role ? `<span class="role">${escape(item.role)}</span>` : "";
-    const secs = item.secs != null ? `<span class="secs">~${escape(item.secs)}s</span>` : "";
-    const name = `<span class="name">${escape(item.name || "?")}</span>`;
-    const quote = item.quote ? `<div class="quote">「${escape(item.quote.slice(0, 36))}」</div>` : "";
+    const role = item.role
+      ? `<span class="role">${escapeHtml(item.role)}</span>` : "";
+    const secs = item.secs != null
+      ? `<span class="secs">~${escapeHtml(item.secs)}s</span>` : "";
+    const name = `<span class="name">${escapeHtml(item.name || "?")}</span>`;
+    const quote = item.quote
+      ? `<div class="quote">「${escapeHtml(item.quote.slice(0, 36))}」</div>` : "";
     el.innerHTML = `<div>${role}${name}${secs}</div>${quote}`;
   }
   return el;
-}
-
-function escape(s) {
-  if (s == null) return "";
-  return String(s).replace(/[&<>"]/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
-  })[c]);
 }
 
 function makeContainer(c, layout, isAssembly) {
@@ -196,7 +203,7 @@ function makeContainer(c, layout, isAssembly) {
     itemsDiv.classList.add("empty");
     const empty = document.createElement("div");
     empty.className = "empty-msg";
-    empty.textContent = c.empty_msg || "（拖曳卡片到這裡）";
+    empty.textContent = c.empty_msg || "(空)";
     itemsDiv.appendChild(empty);
   } else {
     c.items.forEach((item) => itemsDiv.appendChild(makeItem(item, layout)));
@@ -205,25 +212,61 @@ function makeContainer(c, layout, isAssembly) {
   return { wrapper: div, list: itemsDiv };
 }
 
-function render(args) {
-  lastArgs = args;
-  lastResultJson = null;  // force resend on first state read
+function destroyAllSortables() {
+  sortableInstances.forEach((s) => {
+    try { s.destroy(); } catch (e) {}
+  });
+  sortableInstances = [];
+}
 
+function fixEmptyState(list) {
+  const items = list.querySelectorAll(".item");
+  const msg = list.querySelector(".empty-msg");
+  if (items.length === 0) {
+    list.classList.add("empty");
+    if (!msg) {
+      const empty = document.createElement("div");
+      empty.className = "empty-msg";
+      empty.textContent = "(空)";
+      list.appendChild(empty);
+    }
+  } else {
+    list.classList.remove("empty");
+    if (msg) msg.remove();
+  }
+}
+
+function setupSortables() {
+  destroyAllSortables();
+  document.querySelectorAll(".items").forEach((list) => {
+    sortableInstances.push(new Sortable(list, {
+      group: "blocks",
+      animation: 150,
+      ghostClass: "ghost",
+      dragClass: "drag",
+      forceFallback: true,
+      fallbackOnBody: true,
+      swapThreshold: 0.6,
+      onEnd: (evt) => {
+        // Update empty state markers on both source & destination lists
+        if (evt.from) fixEmptyState(evt.from);
+        if (evt.to && evt.to !== evt.from) fixEmptyState(evt.to);
+        emitState();
+      },
+    }));
+  });
+}
+
+function renderUI(args) {
   const containers = args.containers || [];
   const root = document.getElementById("root");
   root.innerHTML = "";
 
-  // First container: assembly (full-width, horizontal items)
-  // Subsequent containers: laid out as a responsive grid (categories)
   let rowDiv = null;
-  const itemLists = [];
-
   containers.forEach((c, idx) => {
     const isAssembly = idx === 0;
     const layout = isAssembly ? "horizontal" : "vertical";
-    const { wrapper, list } = makeContainer(c, layout, isAssembly);
-    itemLists.push(list);
-
+    const { wrapper } = makeContainer(c, layout, isAssembly);
     if (isAssembly) {
       root.appendChild(wrapper);
     } else {
@@ -236,53 +279,39 @@ function render(args) {
     }
   });
 
-  // Setup Sortable on each list, all in same group => cross-container drag works
-  itemLists.forEach((list) => {
-    new Sortable(list, {
-      group: "blocks",
-      animation: 160,
-      ghostClass: "ghost",
-      dragClass: "drag",
-      forceFallback: true,
-      fallbackOnBody: true,
-      swapThreshold: 0.6,
-      onAdd: () => { fixEmptyState(list); emitState(); },
-      onRemove: () => { fixEmptyState(list); emitState(); },
-      onUpdate: emitState,
-    });
-  });
+  setupSortables();
+}
 
-  // Initial state push (so Python knows the initial ordering)
-  emitState();
+// ====== Streamlit render handler ======
+function onStreamlitRender(args) {
+  const incoming = (args.containers || []).map((c) =>
+    (c.items || []).map((i) => i.id)
+  );
+  const incomingFp = fingerprint(incoming);
+
+  // If incoming state matches what we just emitted, skip rebuild —
+  // this prevents flicker after user drag (Python re-renders with the
+  // exact state we just reported, no need to disturb the DOM).
+  if (incomingFp === lastEmittedFingerprint && lastRenderedFingerprint) {
+    setHeight();
+    return;
+  }
+
+  // Otherwise, args genuinely changed (regenerate, new theme, etc.):
+  // do a full rebuild.
+  renderUI(args);
+  lastRenderedFingerprint = incomingFp;
+  lastEmittedFingerprint = incomingFp;
+  // No need to setValue here: Python already has this state.
   setHeight();
 }
 
-function fixEmptyState(list) {
-  // Remove "empty" placeholder if items exist; add it back if list emptied
-  const items = list.querySelectorAll(".item");
-  const msg = list.querySelector(".empty-msg");
-  if (items.length === 0) {
-    list.classList.add("empty");
-    if (!msg) {
-      const empty = document.createElement("div");
-      empty.className = "empty-msg";
-      empty.textContent = "（拖曳卡片到這裡）";
-      list.appendChild(empty);
-    }
-  } else {
-    list.classList.remove("empty");
-    if (msg) msg.remove();
-  }
-}
-
-// ====== Streamlit event ======
 window.addEventListener("message", (event) => {
   if (!event.data || event.data.type !== RENDER_EVT) return;
-  render(event.data.args || {});
+  onStreamlitRender(event.data.args || {});
 });
 
 setReady();
-// Ensure height is reasonable on first paint
 setHeight(400);
 </script>
 </body>

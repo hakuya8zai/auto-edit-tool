@@ -149,7 +149,8 @@ stage_label = {
     "block_builder":    "4️⃣ 組合片段",
     "preset_pick":      "3️⃣ 選擇移除程度",
     "remove_review":    "4️⃣ 微調移除清單",
-    "review":           "5️⃣ 確認並產出",
+    "cam_review_seq":   "5️⃣ 分配每段鏡位",
+    "review":           "6️⃣ 確認並產出",
 }.get(st.session_state["stage"], "?")
 st.caption(f"📍 {stage_label}")
 
@@ -396,11 +397,12 @@ def render_mode_select():
                 "保留原 SRT 順序,AI 直接掃出冗詞贅句、離題段落,你勾選確認後移除。\n\n"
                 "**適合**:演講順剪 / podcast 清理 / 內部存檔\n\n"
                 "**長度**:5 分鐘 ~ 30 分鐘\n\n"
-                "**多機**:僅單機\n\n"
+                "**多機**:支援 A+B(每段可分配鏡位)\n\n"
                 "**流程**:\n"
                 "1. 設定規格 →\n"
                 "2. AI 直接掃描提移除清單(無需主題討論) →\n"
-                "3. 你勾選/取消個別 cue → 產出"
+                "3. 你勾選/取消個別 cue →\n"
+                "4. (多機)為每段分配 A/B 鏡位 → 產出"
             )
             if st.button("選擇順剪去廢話", type="primary",
                          key="pick_sequential", use_container_width=True):
@@ -473,20 +475,18 @@ def render_setup():
 
     multicam_enabled = False
     b_m = b_s = b_f = 0
-    if not is_seq:
-        multicam_enabled = st.checkbox(
-            "➕ 加入 B 機(雙機 multicam)",
-            help="Sequential 模式僅支援單機。",
+    multicam_enabled = st.checkbox(
+        "➕ 加入 B 機(雙機 multicam)",
+        help=("highlight 模式:你可以在每段選 A 或 B。\n\n"
+              "sequential 模式:AI 移除廢話之後,你可以為每個保留段落選 A 或 B。"),
+    )
+    if multicam_enabled:
+        b_m, b_s, b_f = time_3unit(
+            "⏱️ B 機比 A 機晚多久開機?",
+            key_prefix="b_delay", fps_int=fps_int,
+            help_text="方向:B 比 A **晚**開機(B 的 pre-roll 較短)。"
+                      "可從兩機都看得到的拍手 / 揮手動作目測。",
         )
-        if multicam_enabled:
-            b_m, b_s, b_f = time_3unit(
-                "⏱️ B 機比 A 機晚多久開機?",
-                key_prefix="b_delay", fps_int=fps_int,
-                help_text="方向:B 比 A **晚**開機(B 的 pre-roll 較短)。"
-                          "可從兩機都看得到的拍手 / 揮手動作目測。",
-            )
-    else:
-        st.info("ℹ️ 順剪模式僅支援單機(A 機)。")
 
     a_path = "<<RELINK>>"
     b_path = "<<RELINK>>"
@@ -554,7 +554,7 @@ def render_setup():
             "audio_channels": int(audio_channels),
             "a_path": a_path,
             "a_srt_starts_at": (a_m * 60) + a_s + (a_f / fps_int),
-            "multicam_enabled": multicam_enabled and not is_seq,
+            "multicam_enabled": multicam_enabled,
             "b_path": b_path,
             "b_delay_seconds": int(b_m * 60 + b_s),
             "b_delay_frames": int(b_f),
@@ -939,6 +939,81 @@ def render_remove_review():
             st.session_state["stage"] = "preset_pick"
             st.rerun()
     with col3:
+        c = st.session_state["frozen_config"]
+        next_stage = "cam_review_seq" if c["multicam_enabled"] else "review"
+        next_label = "✓ 進入鏡位分配" if c["multicam_enabled"] else "✓ 確認"
+        if st.button(next_label, type="primary", use_container_width=True):
+            st.session_state["stage"] = next_stage
+            st.rerun()
+
+
+# ============================================================================
+# Stage: cam_review_seq (sequential + multicam — assign A/B per kept segment)
+# ============================================================================
+
+def render_cam_review_seq():
+    c = st.session_state["frozen_config"]
+    p = st.session_state["chosen_preset"]
+    flags = st.session_state["remove_keep_flags"]
+    active_removes = [r for r, k in zip(p.get("remove", []), flags) if k]
+
+    # Compute kept segments based on current removals
+    cut_specs = srt2xml.compute_sequential_cuts(
+        c["cues"], active_removes, default_cam="A"
+    )
+
+    st.markdown(f"### 🎥 為每個保留段落分配鏡位 ({len(cut_specs)} 段)")
+    st.caption(
+        "套用所選移除規則後分成這幾段。預設都用 A 機,你可以個別切到 B 機"
+        "(例如情緒重的段落用 B 機特寫)。"
+    )
+
+    cam_overrides = st.session_state.setdefault("seq_cam_overrides", {})
+
+    for i, cs in enumerate(cut_specs):
+        cue_str = cs["cues"]
+        cur_cam = cam_overrides.get(cue_str, "A")
+        with st.container(border=True):
+            head = st.columns([0.5, 5, 2])
+            head[0].markdown(f"**{i+1}.**")
+            # Preview text from the first 2 cues of this segment
+            cues_list = srt2xml.parse_cues(cue_str)
+            preview_parts = []
+            for cn in cues_list[:2]:
+                if cn in c["cues"]:
+                    preview_parts.append(c["cues"][cn][2][:30])
+            preview = " · ".join(preview_parts)
+            head[1].markdown(
+                f"cues `{cue_str}`\n\n"
+                f"<span style='color:#666;font-size:13px'>"
+                f"「{preview}{'...' if len(cues_list) > 2 else ''}」</span>",
+                unsafe_allow_html=True,
+            )
+            new_cam = head[2].radio(
+                "cam", ["A", "B"],
+                index=(0 if cur_cam == "A" else 1),
+                horizontal=True, key=f"seq_cam_{cue_str}_{i}",
+                label_visibility="collapsed",
+            )
+            cam_overrides[cue_str] = new_cam
+
+    # Summary
+    cnt_a = sum(1 for v in cam_overrides.values() if v == "A")
+    cnt_b = sum(1 for v in cam_overrides.values() if v == "B")
+    st.caption(f"分配:A 機 {cnt_a} 段 · B 機 {cnt_b} 段")
+
+    st.divider()
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("← 回到移除清單", use_container_width=True):
+            st.session_state["stage"] = "remove_review"
+            st.rerun()
+    with col2:
+        if st.button("🔄 全部重設為 A 機",
+                     type="secondary", use_container_width=True):
+            st.session_state["seq_cam_overrides"] = {}
+            st.rerun()
+    with col3:
         if st.button("✓ 確認", type="primary", use_container_width=True):
             st.session_state["stage"] = "review"
             st.rerun()
@@ -987,12 +1062,29 @@ def render_review():
                 for r in kept]
         st.dataframe(rows, use_container_width=True, hide_index=True)
 
+        # If multicam, also show the cam-per-segment assignment
+        if c["multicam_enabled"]:
+            cam_overrides = st.session_state.get("seq_cam_overrides", {})
+            cut_specs = srt2xml.compute_sequential_cuts(
+                c["cues"], kept, default_cam="A"
+            )
+            cam_rows = [{
+                "段#": i,
+                "cues": cs["cues"],
+                "鏡位": cam_overrides.get(cs["cues"], "A"),
+            } for i, cs in enumerate(cut_specs)]
+            st.markdown("**鏡位分配**")
+            st.dataframe(cam_rows, use_container_width=True, hide_index=True)
+
     col1, col2 = st.columns([1, 2])
     with col1:
         if st.button("← 返回", use_container_width=True):
-            st.session_state["stage"] = (
-                "block_builder" if mode == "highlight" else "remove_review"
-            )
+            if mode == "highlight":
+                st.session_state["stage"] = "block_builder"
+            else:
+                st.session_state["stage"] = (
+                    "cam_review_seq" if c["multicam_enabled"] else "remove_review"
+                )
             st.rerun()
     with col2:
         if st.button("⚙️ 產出 XML", type="primary", use_container_width=True):
@@ -1041,8 +1133,22 @@ def build_spec():
     else:
         flags = st.session_state["remove_keep_flags"]
         p = st.session_state["chosen_preset"]
-        spec["default_cam"] = "A"
-        spec["remove"] = [r for r, k in zip(p.get("remove", []), flags) if k]
+        active_removes = [r for r, k in zip(p.get("remove", []), flags) if k]
+        if c["multicam_enabled"]:
+            # Build explicit cuts with per-segment cam assignment
+            cam_overrides = st.session_state.get("seq_cam_overrides", {})
+            cut_specs = srt2xml.compute_sequential_cuts(
+                c["cues"], active_removes, default_cam="A"
+            )
+            spec["mode"] = "highlight"  # explicit cuts path
+            spec["cuts"] = [{
+                "cam": cam_overrides.get(cs["cues"], "A"),
+                "cues": cs["cues"],
+                "label": cs.get("label", ""),
+            } for cs in cut_specs]
+        else:
+            spec["default_cam"] = "A"
+            spec["remove"] = active_removes
     return spec
 
 
@@ -1129,5 +1235,7 @@ elif stage == "preset_pick":
     render_preset_pick()
 elif stage == "remove_review":
     render_remove_review()
+elif stage == "cam_review_seq":
+    render_cam_review_seq()
 elif stage == "review":
     render_review()
