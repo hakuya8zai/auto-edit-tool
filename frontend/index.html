@@ -78,9 +78,27 @@
     border-radius: 3px;
     margin-right: 6px;
   }
+  .item .idx {
+    display: inline-block;
+    background: #ff8f00;
+    color: white;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-weight: 700;
+    font-size: 11px;
+    margin-right: 6px;
+  }
   .item .name { font-weight: 600; }
-  .item .quote { color: #555; font-size: 11px; margin-top: 3px; font-style: italic; }
+  .item .quote {
+    color: #555; font-size: 11px; margin-top: 3px; font-style: italic;
+  }
   .item .secs { font-size: 11px; color: #999; float: right; }
+  .item .cues {
+    color: #777;
+    font-size: 11px;
+    margin-top: 3px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
   .ghost { opacity: 0.4; background: #fffde7; }
   .drag {
     cursor: grabbing !important;
@@ -168,14 +186,23 @@ function makeItem(item, layout) {
   if (item.html) {
     el.innerHTML = item.html;
   } else {
+    // Index badge slot — gets filled by updateAssemblyIndices() based on
+    // current container, not the static item.index field.
+    const idxBadge = `<span class="idx" style="display:none">#?</span>`;
     const role = item.role
       ? `<span class="role">${escapeHtml(item.role)}</span>` : "";
     const secs = item.secs != null
       ? `<span class="secs">~${escapeHtml(item.secs)}s</span>` : "";
     const name = `<span class="name">${escapeHtml(item.name || "?")}</span>`;
+    const cues = item.cue_range
+      ? `<div class="cues">cues <b>${escapeHtml(item.cue_range)}</b>`
+        + (item.srt_range ? ` · ${escapeHtml(item.srt_range)}` : "")
+        + `</div>`
+      : "";
     const quote = item.quote
-      ? `<div class="quote">「${escapeHtml(item.quote.slice(0, 36))}」</div>` : "";
-    el.innerHTML = `<div>${role}${name}${secs}</div>${quote}`;
+      ? `<div class="quote">「${escapeHtml(item.quote.slice(0, 36))}」</div>`
+      : "";
+    el.innerHTML = `<div>${idxBadge}${role}${name}${secs}</div>${cues}${quote}`;
   }
   return el;
 }
@@ -219,6 +246,23 @@ function destroyAllSortables() {
   sortableInstances = [];
 }
 
+function updateAssemblyIndices() {
+  // Hide all idx badges first (cards in pool shouldn't show index)
+  document.querySelectorAll(".item .idx").forEach((b) => {
+    b.style.display = "none";
+  });
+  // Then number cards in the assembly container 1, 2, 3, ...
+  const assemblyList = document.querySelector(".container.assembly .items");
+  if (!assemblyList) return;
+  Array.from(assemblyList.querySelectorAll(".item")).forEach((el, i) => {
+    const badge = el.querySelector(".idx");
+    if (badge) {
+      badge.style.display = "inline-block";
+      badge.textContent = `#${i + 1}`;
+    }
+  });
+}
+
 function fixEmptyState(list) {
   const items = list.querySelectorAll(".item");
   const msg = list.querySelector(".empty-msg");
@@ -248,9 +292,9 @@ function setupSortables() {
       fallbackOnBody: true,
       swapThreshold: 0.6,
       onEnd: (evt) => {
-        // Update empty state markers on both source & destination lists
         if (evt.from) fixEmptyState(evt.from);
         if (evt.to && evt.to !== evt.from) fixEmptyState(evt.to);
+        updateAssemblyIndices();
         emitState();
       },
     }));
@@ -280,6 +324,7 @@ function renderUI(args) {
   });
 
   setupSortables();
+  updateAssemblyIndices();
 }
 
 // ====== Streamlit render handler ======

@@ -727,14 +727,35 @@ def render_block_builder():
         role = b.get("narrative_role", "context")
         blocks_by_role.setdefault(role, []).append(bid)
 
+    def fmt_srt_range(start_sec, end_sec):
+        def fmt_t(s):
+            m = int(s // 60)
+            sec = s - m * 60
+            return f"{m}:{sec:05.2f}"
+        return f"{fmt_t(start_sec)}–{fmt_t(end_sec)}"
+
     def make_item(b):
         info = NARRATIVE_ROLES.get(b.get("narrative_role", ""), {})
+        cue_range = b.get("cue_range", "")
+        srt_range = ""
+        try:
+            cue_nums = srt2xml.parse_cues(cue_range)
+            srt_cues = c["cues"]
+            present = [n for n in cue_nums if n in srt_cues]
+            if present:
+                start = min(srt_cues[n][0] for n in present)
+                end = max(srt_cues[n][1] for n in present)
+                srt_range = fmt_srt_range(start, end)
+        except Exception:
+            pass
         return {
             "id": b["id"],
             "name": b.get("name", ""),
             "quote": b.get("hook_quote", ""),
             "role": info.get("emoji", "") + " " + info.get("label_zh", ""),
             "secs": b.get("estimated_length_seconds", "?"),
+            "cue_range": cue_range,
+            "srt_range": srt_range,
         }
 
     containers = [{
