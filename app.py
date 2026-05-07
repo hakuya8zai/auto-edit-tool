@@ -210,6 +210,11 @@ SYS_BLOCKS = """You are an SRT-to-Premiere editing assistant for Taiwanese users
 Given an SRT, a chosen theme, target length, and camera availability,
 produce TWO things:
 
+⚠️ CRITICAL: cue_range MUST contain ONLY cue numbers that EXIST in the SRT.
+The SRT's cue numbers are bounded — check the maximum cue number in the SRT
+text I provide and never propose cues beyond it.
+
+
 1. A pool of 15-25 content BLOCKS, each tagged by `narrative_role` —
    the role this block would play IN THE OUTPUT CLIP (not its position
    in the source SRT).
@@ -687,11 +692,14 @@ def render_theme_pick():
 
 def fetch_blocks_for_theme(theme, prev=None):
     c = st.session_state["frozen_config"]
+    cues_dict = c["cues"]
+    max_cue = max(cues_dict.keys()) if cues_dict else 0
     cam_desc = "A+B (multicam)" if c["multicam_enabled"] else "A only"
     user_msg = (
         f"Chosen theme:\n{json.dumps(theme, ensure_ascii=False, indent=2)}\n\n"
         f"Camera: {cam_desc}\n"
-        f"Target length: {c['target_duration_seconds']:.0f} seconds\n\n"
+        f"Target length: {c['target_duration_seconds']:.0f} seconds\n"
+        f"⚠️ THE SRT HAS CUES NUMBERED 1 TO {max_cue} — DO NOT propose cues > {max_cue}.\n\n"
         f"SRT:\n{c['srt_text']}"
     )
     if prev:
@@ -701,8 +709,45 @@ def fetch_blocks_for_theme(theme, prev=None):
     resp = extract_json(call_claude(api_key, llm_model, SYS_BLOCKS, user_msg))
     blocks = resp.get("blocks", [])
     recommended = resp.get("recommended_assembly", [])
-    blocks_by_id = {b["id"]: b for b in blocks if "id" in b}
-    return blocks_by_id, recommended
+
+    # Filter / clip blocks: drop blocks whose cue_range has NO valid cues,
+    # clip blocks where some cues exceed SRT range.
+    valid_blocks = []
+    dropped = []
+    clipped = []
+    for b in blocks:
+        if "id" not in b or "cue_range" not in b:
+            continue
+        try:
+            cue_nums = srt2xml.parse_cues(b["cue_range"])
+        except Exception:
+            dropped.append((b.get("name"), b.get("cue_range")))
+            continue
+        valid = sorted([n for n in cue_nums if n in cues_dict])
+        if not valid:
+            dropped.append((b.get("name"), b.get("cue_range")))
+            continue
+        if len(valid) < len(cue_nums):
+            new_range = f"{valid[0]}-{valid[-1]}" if len(valid) > 1 else str(valid[0])
+            clipped.append((b.get("name"), b["cue_range"], new_range))
+            b["cue_range"] = new_range
+        valid_blocks.append(b)
+
+    if dropped:
+        st.warning(
+            f"⚠️ LLM 提了 {len(dropped)} 個 SRT 範圍外的 block,已濾掉:\n"
+            + "\n".join(f"  - 「{n}」 cues `{r}`" for n, r in dropped)
+        )
+    if clipped:
+        st.info(
+            f"ℹ️ LLM 提了 {len(clipped)} 個 block 部分超出 SRT 範圍(cue 上限 "
+            f"{max_cue}),自動 clip 到有效 cue:\n"
+            + "\n".join(f"  - 「{n}」 `{old}` → `{new}`" for n, old, new in clipped)
+        )
+
+    blocks_by_id = {b["id"]: b for b in valid_blocks}
+    valid_recommended = [rid for rid in recommended if rid in blocks_by_id]
+    return blocks_by_id, valid_recommended
 
 
 def render_block_builder():

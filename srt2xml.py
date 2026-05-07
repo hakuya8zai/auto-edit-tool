@@ -245,9 +245,22 @@ def expand_cuts(specs, srt, default_padding):
     cuts = []
     for spec in specs:
         nums = parse_cues(spec["cues"])
+        valid_nums = sorted([n for n in nums if n in srt])
         missing = [n for n in nums if n not in srt]
+        if not valid_nums:
+            raise SystemExit(
+                f"all cues {nums} missing from SRT for cut {spec} "
+                f"(SRT has cues 1-{max(srt.keys()) if srt else 0})"
+            )
         if missing:
-            raise SystemExit(f"SRT missing cues: {missing} for cut {spec}")
+            # Soft-clip: keep valid cues, warn via stderr
+            import sys as _sys
+            _sys.stderr.write(
+                f"WARNING: cues {missing} not in SRT (SRT max is "
+                f"{max(srt.keys())}), clipping cut {spec.get('label') or spec.get('cues')!r} "
+                f"to valid range {valid_nums[0]}-{valid_nums[-1]}\n"
+            )
+            nums = valid_nums
         # Use min start / max end for the cue range (handles non-contiguous)
         srt_in_raw = min(srt[n][0] for n in nums)
         srt_out_raw = max(srt[n][1] for n in nums)
