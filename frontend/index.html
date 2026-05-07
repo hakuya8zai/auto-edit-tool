@@ -62,13 +62,18 @@
     line-height: 1.4;
     user-select: none;
     transition: box-shadow 0.1s, transform 0.1s;
+    width: 180px;
+    flex: 0 0 180px;
+    min-height: 60px;
   }
   .item:hover {
     box-shadow: 0 2px 6px rgba(0,0,0,0.08);
     border-color: #888;
   }
   .item:active { cursor: grabbing; }
-  .item.horizontal { width: 200px; flex-shrink: 0; }
+  /* uniform card size whether in assembly or categories */
+  .item.horizontal,
+  .item.vertical { width: 180px; flex: 0 0 180px; }
   .item .role {
     display: inline-block;
     font-size: 10px;
@@ -106,7 +111,7 @@
   }
   .row {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
     gap: 10px;
     margin-bottom: 14px;
   }
@@ -118,6 +123,22 @@
     padding: 8px;
     text-align: center;
   }
+  #catcher {
+    border: 2px dashed #ccc;
+    border-radius: 10px;
+    padding: 18px;
+    text-align: center;
+    color: #888;
+    margin-top: 14px;
+    background: #fafafa;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+  }
+  #catcher.hot {
+    background: #fff3e0;
+    border-color: #ff9800;
+    color: #e65100;
+  }
+  #catcher .item { display: none; }  /* never keep items inside */
 </style>
 </head>
 <body>
@@ -183,11 +204,10 @@ function makeItem(item, layout) {
   const el = document.createElement("div");
   el.className = "item " + layout;
   el.dataset.id = item.id;
+  if (item.role_key) el.dataset.role = item.role_key;  // for auto-route
   if (item.html) {
     el.innerHTML = item.html;
   } else {
-    // Index badge slot — gets filled by updateAssemblyIndices() based on
-    // current container, not the static item.index field.
     const idxBadge = `<span class="idx" style="display:none">#?</span>`;
     const role = item.role
       ? `<span class="role">${escapeHtml(item.role)}</span>` : "";
@@ -226,6 +246,7 @@ function makeContainer(c, layout, isAssembly) {
 
   const itemsDiv = document.createElement("div");
   itemsDiv.className = "items " + layout;
+  if (c.role) itemsDiv.dataset.role = c.role;  // for auto-route
   if (!c.items || c.items.length === 0) {
     itemsDiv.classList.add("empty");
     const empty = document.createElement("div");
@@ -280,6 +301,13 @@ function fixEmptyState(list) {
   }
 }
 
+function fixLayoutClass(item, container) {
+  // Container's items list has class 'horizontal' or 'vertical'
+  const isHor = container.classList.contains("horizontal");
+  item.classList.remove("horizontal", "vertical");
+  item.classList.add(isHor ? "horizontal" : "vertical");
+}
+
 function setupSortables() {
   destroyAllSortables();
   document.querySelectorAll(".items").forEach((list) => {
@@ -288,17 +316,48 @@ function setupSortables() {
       animation: 150,
       ghostClass: "ghost",
       dragClass: "drag",
-      forceFallback: true,
-      fallbackOnBody: true,
-      swapThreshold: 0.6,
+      // Native HTML5 drag = smoother on desktop. Drop forceFallback.
       onEnd: (evt) => {
         if (evt.from) fixEmptyState(evt.from);
-        if (evt.to && evt.to !== evt.from) fixEmptyState(evt.to);
+        if (evt.to && evt.to !== evt.from) {
+          fixEmptyState(evt.to);
+          fixLayoutClass(evt.item, evt.to);
+        }
         updateAssemblyIndices();
         emitState();
       },
     }));
   });
+
+  // Catcher: drop here = auto-route to item's narrative_role category
+  const catcher = document.getElementById("catcher");
+  if (catcher) {
+    sortableInstances.push(new Sortable(catcher, {
+      group: { name: "blocks", pull: false, put: true },
+      animation: 150,
+      ghostClass: "ghost",
+      onAdd: (evt) => {
+        const item = evt.item;
+        const role = item.dataset.role;
+        let target = role
+          ? document.querySelector(`.items[data-role="${role}"]`)
+          : null;
+        if (!target) {
+          // No matching category — fallback to first category container
+          target = document.querySelector(".row .items");
+        }
+        if (target) {
+          target.appendChild(item);
+          fixLayoutClass(item, target);
+          fixEmptyState(target);
+        }
+        // Catcher should never retain items; remove placeholder if any
+        catcher.querySelectorAll(".item").forEach((el) => el.remove());
+        updateAssemblyIndices();
+        emitState();
+      },
+    }));
+  }
 }
 
 function renderUI(args) {
@@ -309,7 +368,9 @@ function renderUI(args) {
   let rowDiv = null;
   containers.forEach((c, idx) => {
     const isAssembly = idx === 0;
-    const layout = isAssembly ? "horizontal" : "vertical";
+    // Use 'horizontal' wrap layout for ALL containers — uniform card size,
+    // assembly is just visually distinguished by the orange border.
+    const layout = "horizontal";
     const { wrapper } = makeContainer(c, layout, isAssembly);
     if (isAssembly) {
       root.appendChild(wrapper);
@@ -322,6 +383,12 @@ function renderUI(args) {
       rowDiv.appendChild(wrapper);
     }
   });
+
+  // Add auto-route catcher at bottom
+  const catcher = document.createElement("div");
+  catcher.id = "catcher";
+  catcher.textContent = "🪄 把片段拖到這裡 → 自動歸位到該類別";
+  root.appendChild(catcher);
 
   setupSortables();
   updateAssemblyIndices();

@@ -768,7 +768,8 @@ def render_block_builder():
         return f"{fmt_t(start_sec)}–{fmt_t(end_sec)}"
 
     def make_item(b):
-        info = NARRATIVE_ROLES.get(b.get("narrative_role", ""), {})
+        role_key = b.get("narrative_role", "")
+        info = NARRATIVE_ROLES.get(role_key, {})
         cue_range = b.get("cue_range", "")
         srt_range = ""
         try:
@@ -786,6 +787,7 @@ def render_block_builder():
             "name": b.get("name", ""),
             "quote": b.get("hook_quote", ""),
             "role": info.get("emoji", "") + " " + info.get("label_zh", ""),
+            "role_key": role_key,  # for auto-route lookup in frontend
             "secs": b.get("estimated_length_seconds", "?"),
             "cue_range": cue_range,
             "srt_range": srt_range,
@@ -796,6 +798,7 @@ def render_block_builder():
         "meta": f"{len(selected_ids)} 段 · ~{total_secs}s",
         "items": [make_item(pool[bid]) for bid in selected_ids if bid in pool],
         "empty_msg": "(從下方分類拖曳卡片到這裡開始組合)",
+        "role": "__assembly__",
     }]
     for role in ROLE_ORDER:
         info = NARRATIVE_ROLES[role]
@@ -805,6 +808,7 @@ def render_block_builder():
             "meta": f"{len(ids)}",
             "items": [make_item(pool[bid]) for bid in ids],
             "empty_msg": "(空)",
+            "role": role,
         })
 
     # Render custom component
@@ -813,9 +817,23 @@ def render_block_builder():
         key=f"sorter_{st.session_state['regen_blocks']}",
     )
 
-    # Parse result: list of lists of ids, one per container
+    # Parse result: list of lists of ids, one per container.
+    # Reorder the pool dict so its iteration matches frontend's order
+    # (assembly first, then per-category in ROLE_ORDER). This makes the
+    # next render produce containers IDENTICAL to what the frontend
+    # already shows → fingerprint matches → no rebuild → no flicker.
     if result and isinstance(result, list) and len(result) > 0:
         new_selected_ids = [bid for bid in result[0] if bid in pool]
+        flat_order = list(new_selected_ids)
+        for cat_list in result[1:]:
+            for bid in cat_list:
+                if bid in pool and bid not in flat_order:
+                    flat_order.append(bid)
+        # Append any orphaned items (shouldn't happen normally)
+        for bid in pool:
+            if bid not in flat_order:
+                flat_order.append(bid)
+        st.session_state["block_pool"] = {bid: pool[bid] for bid in flat_order}
         st.session_state["selected_ids"] = new_selected_ids
 
     new_selected_ids = st.session_state["selected_ids"]
