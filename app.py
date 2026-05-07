@@ -432,6 +432,18 @@ def render_setup():
         placeholder="例如:募款短片 / 社群短片 / podcast 順剪",
     )
 
+    # Inline-parse uploaded SRT to fetch cue 1's SRT start time (used
+    # below as default for the "first speech in source" alignment input).
+    cue_1_srt_start = None
+    if uploaded:
+        try:
+            srt_preview = uploaded.getvalue().decode("utf-8")
+            preview_cues = srt2xml.parse_srt(srt_preview)
+            if preview_cues:
+                cue_1_srt_start = preview_cues[min(preview_cues.keys())][0]
+        except Exception:
+            pass
+
     st.divider()
 
     # ----- Sequence -----
@@ -465,13 +477,34 @@ def render_setup():
     st.caption("不需要在這裡指定來源檔路徑——匯入 Premiere 後 re-link 即可。")
     fps_int = srt2xml.FPS_PRESETS[fps]["fps_int"]
 
+    # Default values for A alignment input: cue 1's SRT start time
+    # (so for Whisper-from-full-source case, user accepts default and math is correct).
+    if cue_1_srt_start is not None and cue_1_srt_start > 0:
+        _def_total = cue_1_srt_start
+        _def_m = int(_def_total // 60)
+        _def_s = int(_def_total - _def_m * 60)
+        _def_f = int(round((_def_total - _def_m * 60 - _def_s) * fps_int))
+    else:
+        _def_m = _def_s = _def_f = 0
+
     a_m, a_s, a_f = time_3unit(
-        "📍 逐字稿從 A 機影片的第幾分幾秒幾 frame 開始?",
+        "📍 第一段話(SRT cue 1)在 A 機影片的第幾分幾秒幾 frame 開始?",
         key_prefix="a_srt_starts", fps_int=fps_int,
-        help_text="若 SRT 是用 Whisper 從這份 A 機原檔自動轉錄(時間戳已對齊),"
-                  "保持 0 分 0 秒 0 frame。若 A 機有 pre-roll(例如錄影機提早開機"
-                  "13 分鐘才開始講話),輸入講話開始的位置(例如 13 分 48 秒 47 frame)。",
+        default_m=_def_m, default_s=_def_s, default_f=_def_f,
+        help_text=(
+            "輸入 SRT cue 1(第一段話)的內容在 A 機原檔中對應的時間點。\n\n"
+            "• **Whisper 從完整 A 機原檔轉錄**:時間戳已對齊源檔,輸入 SRT cue 1 的"
+            "起始時間即可(我已自動填入預設)。\n\n"
+            "• **A 機有 pre-roll**(例如錄影機提早開機 13 分鐘才開始講話):"
+            "輸入 cue 1 第一個字實際出現在 A 機原檔中的時間,在 Premiere 內 scrub 確認。"
+        ),
     )
+    if cue_1_srt_start is not None:
+        st.caption(
+            f"💡 你的 SRT 第一個 cue 從 **SRT 第 {cue_1_srt_start:.2f} 秒** 開始。"
+            f"如果 SRT 是 Whisper 從完整源檔轉的,直接用預設值即可。"
+            f"如果源檔有 pre-roll,改成 cue 1 內容在源檔的實際時間。"
+        )
 
     multicam_enabled = False
     b_m = b_s = b_f = 0
@@ -1114,6 +1147,16 @@ def render_review():
 
 def build_spec():
     c = st.session_state["frozen_config"]
+
+    # User input semantics: "first speech (SRT cue 1) is at A-source second X".
+    # srt2xml's spec field expects: "source second when SRT 0 starts".
+    # Convert: SRT 0 = source (X - cue_1_srt_start_time).
+    cues = c["cues"]
+    cue_1_srt_start = (
+        cues[min(cues.keys())][0] if cues else 0.0
+    )
+    srt_zero_at_source = c["a_srt_starts_at"] - cue_1_srt_start
+
     b_delay_str = f"{c['b_delay_seconds']}s{c['b_delay_frames']}f"
     spec = {
         "sequence": {
@@ -1126,7 +1169,7 @@ def build_spec():
         },
         "cameras": {
             "A": {"file": "A_camera", "path": c["a_path"],
-                  "srt_starts_at_source_seconds": c["a_srt_starts_at"]},
+                  "srt_starts_at_source_seconds": srt_zero_at_source},
         },
         "settings": {
             "padding": c["padding"],
