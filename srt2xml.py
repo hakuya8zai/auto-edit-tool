@@ -50,6 +50,17 @@ def get_fps_preset(fps_str):
     return FPS_PRESETS[s]
 
 
+def actual_fps(fps_preset):
+    """Real-world playback rate. For NTSC modes this is timebase / 1.001
+    (e.g. 59.94 for timebase 60); for non-NTSC it equals the timebase.
+
+    Use this — NOT `timebase` — whenever converting between real-world
+    seconds (e.g. SRT timestamps, stopwatch measurements) and frame counts.
+    """
+    tb = fps_preset["timebase"]
+    return tb / 1.001 if fps_preset["ntsc"] else tb
+
+
 # =============================================================================
 # Timecode parsing (NDF + SMPTE drop-frame)
 # =============================================================================
@@ -287,12 +298,18 @@ def compute_offsets(cams, fps_preset, displayformat):
     """Compute frame-at-SRT-0 per camera. Returns (offsets dict, anchor_cam_id).
 
     Anchor camera can use EITHER:
-      - "srt_starts_at_source_seconds": <float>   (simpler, e.g. 0.0 or 828.78)
+      - "srt_starts_at_source_seconds": <float>   (REAL-WORLD seconds in source
+                                                   where SRT time 0 occurs)
       - "anchor": {"srt_at": <float>, "source_tc": "HH:MM:SS:FF"}   (legacy TC form)
     Other cameras use "delay_from_<anchor_cam>" relative to the anchor.
+
+    NTSC drift fix: SRT timestamps are real-world seconds, so converting to
+    frame counts uses actual_fps (timebase / 1.001 for 59.94 / 29.97 / 23.976).
+    Using `timebase` directly would introduce a 0.1% linear drift — visibly
+    wrong by ~1 second over a 16-minute SRT.
     """
-    timebase = fps_preset["timebase"]
     fps_int = fps_preset["fps_int"]
+    fps_real = actual_fps(fps_preset)
     offsets = {}
 
     anchor_cam = next(
@@ -308,14 +325,14 @@ def compute_offsets(cams, fps_preset, displayformat):
     for cid, cam in cams.items():
         if "srt_starts_at_source_seconds" in cam:
             offsets[cid] = int(round(
-                float(cam["srt_starts_at_source_seconds"]) * timebase
+                float(cam["srt_starts_at_source_seconds"]) * fps_real
             ))
         elif "anchor" in cam:
             anchor_frame = parse_tc_to_frame(
                 cam["anchor"]["source_tc"], fps_preset, displayformat
             )
             srt_at = float(cam["anchor"]["srt_at"])
-            offsets[cid] = anchor_frame - int(round(srt_at * timebase))
+            offsets[cid] = anchor_frame - int(round(srt_at * fps_real))
         else:
             delay_key = f"delay_from_{anchor_cam.lower()}"
             if delay_key not in cam:
@@ -329,12 +346,25 @@ def compute_offsets(cams, fps_preset, displayformat):
     return offsets, anchor_cam
 
 
-def compute_frames(cuts, cam_offsets, timebase):
+def compute_frames(cuts, cam_offsets, fps_preset):
+    """Compute per-camera source frame in/out and timeline in/out per cut.
+
+    SRT timestamps are real-world seconds, so they convert to source frame
+    counts via actual_fps (NOT timebase). For NTSC modes this avoids a 0.1%
+    drift that would otherwise add up to ~1 second by the end of a long SRT.
+    """
+    # Accept either an fps_preset dict (new) or a bare timebase int (legacy
+    # callers in tests / older specs). The bare-int form skips the NTSC
+    # correction — it only matches non-NTSC framerates anyway.
+    if isinstance(fps_preset, dict):
+        fps_real = actual_fps(fps_preset)
+    else:
+        fps_real = fps_preset
     timeline_pos = 0
     cam_ids = list(cam_offsets.keys())
     for cut in cuts:
-        in_f = cut["srt_in"] * timebase
-        out_f = cut["srt_out"] * timebase
+        in_f = cut["srt_in"] * fps_real
+        out_f = cut["srt_out"] * fps_real
         for cid, offset in cam_offsets.items():
             cut[f"{cid.lower()}_in"] = int(round(offset + in_f))
             cut[f"{cid.lower()}_out"] = int(round(offset + out_f))
@@ -548,7 +578,7 @@ def emit_xml(spec, cuts, total_duration, cam_offsets):
 # =============================================================================
 
 def make_analysis(cuts, srt, cam_offsets, anchor_cam, fps_preset, total_duration):
-    timebase = fps_preset["timebase"]
+    fps_real = actual_fps(fps_preset)
     out = []
     for idx, cut in enumerate(cuts):
         mid_srt = (cut["srt_in"] + cut["srt_out"]) / 2
@@ -560,7 +590,7 @@ def make_analysis(cuts, srt, cam_offsets, anchor_cam, fps_preset, total_duration
             cid: {
                 "in": cut[f"{cid.lower()}_in"],
                 "out": cut[f"{cid.lower()}_out"],
-                "mid": int(round(offset + mid_srt * timebase)),
+                "mid": int(round(offset + mid_srt * fps_real)),
             }
             for cid, offset in cam_offsets.items()
         }
@@ -575,7 +605,7 @@ def make_analysis(cuts, srt, cam_offsets, anchor_cam, fps_preset, total_duration
             "timeline_in": cut["timeline_in"],
             "timeline_out": cut["timeline_out"],
             "duration_frames": cut["timeline_out"] - cut["timeline_in"],
-            "duration_seconds": round((cut["timeline_out"] - cut["timeline_in"]) / timebase, 3),
+            "duration_seconds": round((cut["timeline_out"] - cut["timeline_in"]) / fps_real, 3),
             "mid": {
                 "srt_seconds": round(mid_srt, 3),
                 "cue_at_mid": cue_at,
@@ -585,7 +615,7 @@ def make_analysis(cuts, srt, cam_offsets, anchor_cam, fps_preset, total_duration
         })
     return {
         "total_duration_frames": total_duration,
-        "total_duration_seconds": round(total_duration / timebase, 3),
+        "total_duration_seconds": round(total_duration / fps_real, 3),
         "anchor_camera": anchor_cam,
         "camera_offsets": cam_offsets,
         "cuts": out,
@@ -771,11 +801,11 @@ def main():
         cut_specs = spec["cuts"]
 
     cuts = expand_cuts(cut_specs, srt, padding)
-    total_duration = compute_frames(cuts, cam_offsets, timebase)
+    total_duration = compute_frames(cuts, cam_offsets, fps_preset)
 
     target_raw = settings.get("target_duration")
     target = parse_duration(target_raw) if target_raw is not None else None
-    duration_sec = total_duration / timebase
+    duration_sec = total_duration / actual_fps(fps_preset)
     duration_status = None
     if target is not None:
         diff = duration_sec - target

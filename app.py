@@ -1284,14 +1284,23 @@ def render_review():
 def build_spec():
     c = st.session_state["frozen_config"]
 
-    # User input semantics: "first speech (SRT cue 1) is at A-source second X".
-    # srt2xml's spec field expects: "source second when SRT 0 starts".
-    # Convert: SRT 0 = source (X - cue_1_srt_start_time).
+    # User input semantics: "first speech (SRT cue 1) is at A-source TC X"
+    # — i.e. the user reads m:s:f off Premiere, which is nominal frames.
+    # SRT timestamps are real-world seconds (Whisper output). For NTSC
+    # framerates these differ by 0.1%, so we must convert TC→RW seconds
+    # via actual_fps, NOT via the nominal timebase. Otherwise every cut
+    # drifts ~0.1% later than intended (≈1 second over 16 min of SRT).
     cues = c["cues"]
     cue_1_srt_start = (
         cues[min(cues.keys())][0] if cues else 0.0
     )
-    srt_zero_at_source = c["a_srt_starts_at"] - cue_1_srt_start
+    fps_preset = srt2xml.get_fps_preset(c["fps"])
+    timebase = fps_preset["timebase"]
+    fps_real = srt2xml.actual_fps(fps_preset)
+    # a_srt_starts_at is the user's TC in nominal seconds (frame / timebase).
+    # Convert to real-world seconds by scaling by timebase / actual_fps.
+    a_anchor_rw_seconds = c["a_srt_starts_at"] * timebase / fps_real
+    srt_zero_at_source = a_anchor_rw_seconds - cue_1_srt_start
 
     b_delay_str = f"{c['b_delay_seconds']}s{c['b_delay_frames']}f"
     spec = {
@@ -1359,7 +1368,7 @@ def generate_xml():
     try:
         srt2xml.validate_spec(spec)
         fps_preset = srt2xml.get_fps_preset(spec["sequence"]["fps"])
-        timebase = fps_preset["timebase"]
+        fps_real = srt2xml.actual_fps(fps_preset)
         cam_offsets, anchor_cam = srt2xml.compute_offsets(spec["cameras"], fps_preset, c["df"])
         if spec["mode"] == "sequential":
             cut_specs = srt2xml.compute_sequential_cuts(cues, spec.get("remove", []), "A")
@@ -1369,14 +1378,14 @@ def generate_xml():
             st.error("套用設定後沒有產生任何 cut")
             return
         cuts = srt2xml.expand_cuts(cut_specs, cues, c["padding"])
-        total_frames = srt2xml.compute_frames(cuts, cam_offsets, timebase)
+        total_frames = srt2xml.compute_frames(cuts, cam_offsets, fps_preset)
         xml_text = srt2xml.emit_xml(spec, cuts, total_frames, cam_offsets)
     except SystemExit as e:
         st.error(f"產出失敗:{e}"); return
     except Exception as e:
         st.error(f"未預期錯誤:{e}"); return
 
-    duration_sec = total_frames / timebase
+    duration_sec = total_frames / fps_real
     target_sec = c.get("target_duration_seconds") or None
 
     st.success(f"✅ 產出完成 — {len(cuts)} 個 cut · {duration_sec:.2f} 秒")
