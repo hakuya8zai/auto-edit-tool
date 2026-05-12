@@ -1,3 +1,4 @@
 streamlit>=1.30
 anthropic>=0.40
+openai>=1.50
 streamlit-sortables>=0.3

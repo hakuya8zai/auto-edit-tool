@@ -79,10 +79,11 @@ ROLE_ORDER = ["opener", "teaser", "context", "climax", "story", "data", "closer"
 # ============================================================================
 
 def reset_workflow():
-    keep = {"api_key_input", "llm_model_input"}
     for k in list(st.session_state.keys()):
-        if k not in keep:
-            del st.session_state[k]
+        if k.startswith("api_key_input") or k.startswith("llm_model_input") \
+                or k == "llm_provider_input":
+            continue
+        del st.session_state[k]
     st.session_state["stage"] = "mode_select"
 
 
@@ -108,15 +109,31 @@ for k, v in [
 # Sidebar
 # ============================================================================
 
+LLM_PROVIDERS = {
+    "Anthropic": {
+        "key_label": "Anthropic API key",
+        "models": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+        "default_model_idx": 1,
+    },
+    "OpenAI": {
+        "key_label": "OpenAI API key",
+        "models": ["gpt-5.5", "gpt-5", "gpt-4.1", "gpt-4o"],
+        "default_model_idx": 0,
+    },
+}
+
 with st.sidebar:
     st.header("🤖 LLM 設定")
-    api_key = st.text_input("Anthropic API key", type="password",
-        key="api_key_input",
+    provider = st.selectbox("Provider", list(LLM_PROVIDERS.keys()),
+        index=0, key="llm_provider_input")
+    _p = LLM_PROVIDERS[provider]
+    api_key = st.text_input(_p["key_label"], type="password",
+        key=f"api_key_input_{provider}",
         help="僅在此瀏覽器 session 使用,不會儲存。關閉分頁即清除。")
     llm_model = st.selectbox("Model",
-        ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
-        index=1, key="llm_model_input")
-    if api_key: st.caption("🔓 已輸入 key(僅本次 session)")
+        _p["models"], index=_p["default_model_idx"],
+        key=f"llm_model_input_{provider}")
+    if api_key: st.caption(f"🔓 已輸入 key(僅本次 session,使用 {provider})")
     else: st.caption("輸入 key 才能使用 LLM 提案功能")
 
     st.divider()
@@ -159,7 +176,23 @@ st.caption(f"📍 {stage_label}")
 # LLM helpers
 # ============================================================================
 
-def call_claude(api_key, model, system, user_msg, max_tokens=8192):
+def call_llm(api_key, model, system, user_msg, max_tokens=8192,
+             provider="Anthropic"):
+    if provider == "OpenAI":
+        try:
+            import openai
+        except ImportError:
+            st.error("尚未安裝 `openai` 套件,請執行 `pip install openai`")
+            st.stop()
+        client = openai.OpenAI(api_key=api_key)
+        resp = client.chat.completions.create(
+            model=model, max_completion_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_msg},
+            ],
+        )
+        return resp.choices[0].message.content
     try:
         import anthropic
     except ImportError:
@@ -169,6 +202,10 @@ def call_claude(api_key, model, system, user_msg, max_tokens=8192):
     msg = client.messages.create(model=model, max_tokens=max_tokens,
         system=system, messages=[{"role": "user", "content": user_msg}])
     return msg.content[0].text
+
+
+# Backwards-compatible alias used in earlier code paths.
+call_claude = call_llm
 
 
 def extract_json(text):
@@ -561,10 +598,13 @@ def render_setup():
 
     # ----- Start -----
     btn_label = "▶️ 開始" + ("(AI 直接掃描)" if is_seq else "(進入主題選擇)")
-    if st.button(btn_label, type="primary", use_container_width=True):
+    start_clicked = st.button(btn_label, type="primary",
+                              use_container_width=True)
+    status_slot = st.empty()
+    if start_clicked:
         errors = []
         if not uploaded: errors.append("請先上傳 SRT 檔案")
-        if not api_key: errors.append("請在左側輸入 Anthropic API key")
+        if not api_key: errors.append(f"請在左側輸入 {provider} API key")
         if df == "DF" and fps not in ("29.97", "59.94"):
             errors.append(f"DF 僅支援 29.97 / 59.94 fps,目前選的是 {fps}")
         if errors:
@@ -599,9 +639,29 @@ def render_setup():
             "target_duration_seconds": float(target_seconds),
             "padding": float(padding),
         }
-        st.session_state["stage"] = (
-            "preset_pick" if is_seq else "theme_pick"
+        next_stage = "preset_pick" if is_seq else "theme_pick"
+        st.session_state["stage"] = next_stage
+
+        # Pre-fetch the LLM result HERE so the user sees the spinner
+        # immediately on this page rather than a blank rerun.
+        spinner_msg = (
+            "🤖 正在掃描 SRT 找移除候選..." if is_seq
+            else "🤖 正在從 SRT 產生主題提案..."
         )
+        with status_slot.container():
+            with st.spinner(spinner_msg):
+                try:
+                    if is_seq:
+                        st.session_state["presets"] = fetch_presets()
+                    else:
+                        st.session_state["themes"] = fetch_themes()
+                except Exception as e:
+                    st.error(f"LLM 呼叫失敗:{e}")
+                    # Stay on this page so user can fix and retry.
+                    st.session_state["stage"] = (
+                        "setup_sequential" if is_seq else "setup_highlight"
+                    )
+                    return
         st.rerun()
 
 
@@ -620,7 +680,9 @@ def fetch_themes(prev=None):
     if prev:
         names = ", ".join(t.get("name", "?") for t in prev)
         user_msg += f"\n\nPreviously proposed themes: {names}. Propose DIFFERENT angles."
-    return extract_json(call_claude(api_key, llm_model, SYS_THEMES, user_msg)).get("themes", [])
+    return extract_json(call_llm(
+        api_key, llm_model, SYS_THEMES, user_msg, provider=provider
+    )).get("themes", [])
 
 
 def render_theme_pick():
@@ -706,7 +768,9 @@ def fetch_blocks_for_theme(theme, prev=None):
         names = ", ".join(b.get("name", "?") for b in prev.values())
         user_msg += (f"\n\nPreviously proposed blocks: {names}. "
                      f"Propose DIFFERENT blocks (different cue ranges and angles).")
-    resp = extract_json(call_claude(api_key, llm_model, SYS_BLOCKS, user_msg))
+    resp = extract_json(call_llm(
+        api_key, llm_model, SYS_BLOCKS, user_msg, provider=provider
+    ))
     blocks = resp.get("blocks", [])
     recommended = resp.get("recommended_assembly", [])
 
@@ -817,6 +881,7 @@ def render_block_builder():
         info = NARRATIVE_ROLES.get(role_key, {})
         cue_range = b.get("cue_range", "")
         srt_range = ""
+        actual_text = ""
         try:
             cue_nums = srt2xml.parse_cues(cue_range)
             srt_cues = c["cues"]
@@ -825,12 +890,18 @@ def render_block_builder():
                 start = min(srt_cues[n][0] for n in present)
                 end = max(srt_cues[n][1] for n in present)
                 srt_range = fmt_srt_range(start, end)
+                # Concatenate the actual SRT text for this block's cues
+                # so the user can verify the LLM label matches reality.
+                actual_text = " ".join(srt_cues[n][2] for n in present)
         except Exception:
             pass
+        # Prefer the real SRT text over the LLM's possibly-hallucinated
+        # hook_quote. Falls back to hook_quote if the cue range was bad.
+        quote = actual_text or b.get("hook_quote", "")
         return {
             "id": b["id"],
             "name": b.get("name", ""),
-            "quote": b.get("hook_quote", ""),
+            "quote": quote,
             "role": info.get("emoji", "") + " " + info.get("label_zh", ""),
             "role_key": role_key,  # for auto-route lookup in frontend
             "secs": b.get("estimated_length_seconds", "?"),
@@ -960,7 +1031,9 @@ def fetch_presets(prev=None):
     )
     if prev:
         user_msg += "\n\nPropose DIFFERENT removal sets than before."
-    return extract_json(call_claude(api_key, llm_model, SYS_PRESETS, user_msg)).get("presets", [])
+    return extract_json(call_llm(
+        api_key, llm_model, SYS_PRESETS, user_msg, provider=provider
+    )).get("presets", [])
 
 
 def render_preset_pick():

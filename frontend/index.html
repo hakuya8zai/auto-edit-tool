@@ -110,13 +110,29 @@
     box-shadow: 0 6px 14px rgba(0,0,0,0.18);
   }
   .row {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
     gap: 10px;
     margin-bottom: 14px;
+    overflow-x: auto;
+    overflow-y: visible;
+    padding-bottom: 8px;
   }
-  .row .container { margin-bottom: 0; }
+  .row .container {
+    margin-bottom: 0;
+    flex: 0 0 240px;
+    min-width: 240px;
+    max-width: 240px;
+  }
   .row .container .header { font-size: 13px; }
+  .row .items.horizontal {
+    /* Inside a fixed-width column, items stack vertically so the
+       column itself doesn't have to grow horizontally. */
+    flex-direction: column;
+    flex-wrap: nowrap;
+  }
+  .row .item.horizontal { width: 100%; flex: 0 0 auto; }
   .empty-msg {
     color: #999;
     font-size: 12px;
@@ -126,11 +142,14 @@
   #catcher {
     border: 2px dashed #ccc;
     border-radius: 10px;
-    padding: 18px;
+    padding: 12px;
     text-align: center;
     color: #888;
-    margin-top: 14px;
+    margin-bottom: 14px;
     background: #fafafa;
+    position: sticky;
+    top: 0;
+    z-index: 10;
     transition: background 0.1s, border-color 0.1s, color 0.1s;
   }
   #catcher.hot {
@@ -220,7 +239,7 @@ function makeItem(item, layout) {
         + `</div>`
       : "";
     const quote = item.quote
-      ? `<div class="quote">「${escapeHtml(item.quote.slice(0, 36))}」</div>`
+      ? `<div class="quote">「${escapeHtml(item.quote.slice(0, 80))}${item.quote.length > 80 ? "…" : ""}」</div>`
       : "";
     el.innerHTML = `<div>${idxBadge}${role}${name}${secs}</div>${cues}${quote}`;
   }
@@ -316,7 +335,15 @@ function setupSortables() {
       animation: 150,
       ghostClass: "ghost",
       dragClass: "drag",
-      // Native HTML5 drag = smoother on desktop. Drop forceFallback.
+      // Only .item elements are draggable; the (空) placeholder is not.
+      // This fixes a first-drag-snaps-back bug where the placeholder
+      // got picked up as a drag source.
+      draggable: ".item",
+      filter: ".empty-msg",
+      // forceFallback gives consistent behavior inside Streamlit iframes
+      // (native HTML5 drag occasionally drops the first event).
+      forceFallback: true,
+      fallbackOnBody: true,
       onEnd: (evt) => {
         if (evt.from) fixEmptyState(evt.from);
         if (evt.to && evt.to !== evt.from) {
@@ -336,6 +363,9 @@ function setupSortables() {
       group: { name: "blocks", pull: false, put: true },
       animation: 150,
       ghostClass: "ghost",
+      draggable: ".item",
+      forceFallback: true,
+      fallbackOnBody: true,
       onAdd: (evt) => {
         const item = evt.item;
         const role = item.dataset.role;
@@ -365,6 +395,13 @@ function renderUI(args) {
   const root = document.getElementById("root");
   root.innerHTML = "";
 
+  // Auto-route catcher at the TOP — placed before the assembly so it's
+  // always reachable even when category columns get tall.
+  const catcher = document.createElement("div");
+  catcher.id = "catcher";
+  catcher.textContent = "🪄 把片段拖到這裡 → 自動歸位到該類別";
+  root.appendChild(catcher);
+
   let rowDiv = null;
   containers.forEach((c, idx) => {
     const isAssembly = idx === 0;
@@ -383,12 +420,6 @@ function renderUI(args) {
       rowDiv.appendChild(wrapper);
     }
   });
-
-  // Add auto-route catcher at bottom
-  const catcher = document.createElement("div");
-  catcher.id = "catcher";
-  catcher.textContent = "🪄 把片段拖到這裡 → 自動歸位到該類別";
-  root.appendChild(catcher);
 
   setupSortables();
   updateAssemblyIndices();
