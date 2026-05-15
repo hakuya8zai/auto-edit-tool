@@ -550,33 +550,26 @@ def render_setup():
     st.caption("不需要在這裡指定來源檔路徑——匯入 Premiere 後 re-link 即可。")
     fps_int = srt2xml.FPS_PRESETS[fps]["fps_int"]
 
-    # Default values for A alignment input: cue 1's SRT start time
-    # (so for Whisper-from-full-source case, user accepts default and math is correct).
-    if cue_1_srt_start is not None and cue_1_srt_start > 0:
-        _def_total = cue_1_srt_start
-        _def_m = int(_def_total // 60)
-        _def_s = int(_def_total - _def_m * 60)
-        _def_f = int(round((_def_total - _def_m * 60 - _def_s) * fps_int))
-    else:
-        _def_m = _def_s = _def_f = 0
+    # Default 0,0,0 (per user request). Math: "0,0,0" means SRT cue 1
+    # maps to source TC 0:00:00 — i.e. no pre-roll, speaker starts at
+    # source's very first frame. For sources with pre-roll the user
+    # scrubs Premiere to find where the speaker starts and types in
+    # that TC.
 
     a_m, a_s, a_f = time_3unit(
-        "📍 第一段話(SRT cue 1)在 A 機影片的第幾分幾秒幾 frame 開始?",
+        "📍 SRT cue 1(第一段話)在 A 機源檔的第幾分幾秒幾 frame 開始?",
         key_prefix="a_srt_starts", fps_int=fps_int,
-        default_m=_def_m, default_s=_def_s, default_f=_def_f,
+        default_m=0, default_s=0, default_f=0,
         help_text=(
-            "輸入 SRT cue 1(第一段話)的內容在 A 機原檔中對應的時間點。\n\n"
-            "• **Whisper 從完整 A 機原檔轉錄**:時間戳已對齊源檔,輸入 SRT cue 1 的"
-            "起始時間即可(我已自動填入預設)。\n\n"
-            "• **A 機有 pre-roll**(例如錄影機提早開機 13 分鐘才開始講話):"
-            "輸入 cue 1 第一個字實際出現在 A 機原檔中的時間,在 Premiere 內 scrub 確認。"
+            "預設 0,0,0 = 沒有 pre-roll(SRT 跟源檔對齊)。\n\n"
+            "• **Whisper 從完整 A 機原檔轉錄、源檔沒 pre-roll**:留 0,0,0。\n\n"
+            "• **A 機有 pre-roll**(錄影機提早開機 13 分鐘才開始講話):"
+            "在 Premiere 中 scrub 找到 cue 1 第一個字實際出現在 A 機源檔的時間點,輸入該值。"
         ),
     )
     if cue_1_srt_start is not None:
         st.caption(
-            f"💡 你的 SRT 第一個 cue 從 **SRT 第 {cue_1_srt_start:.2f} 秒** 開始。"
-            f"如果 SRT 是 Whisper 從完整源檔轉的,直接用預設值即可。"
-            f"如果源檔有 pre-roll,改成 cue 1 內容在源檔的實際時間。"
+            f"💡 你的 SRT 第一個 cue 從 SRT 第 **{cue_1_srt_start:.2f} 秒** 開始(供參考)。"
         )
 
     multicam_enabled = False
@@ -1435,8 +1428,11 @@ def build_spec():
     fps_preset = srt2xml.get_fps_preset(c["fps"])
     timebase = fps_preset["timebase"]
     fps_real = srt2xml.actual_fps(fps_preset)
-    # a_srt_starts_at is the user's TC in nominal seconds (frame / timebase).
-    # Convert to real-world seconds by scaling by timebase / actual_fps.
+    # `a_srt_starts_at` = the source TC where SRT cue 1's first frame
+    # appears (in nominal seconds). Default is 0,0,0 = "speaker starts
+    # at source 0:00:00 / no pre-roll". Convert nominal → RW seconds via
+    # timebase/actual_fps, then subtract cue 1's SRT offset to get the
+    # source second value that corresponds to SRT 0.
     a_anchor_rw_seconds = c["a_srt_starts_at"] * timebase / fps_real
     srt_zero_at_source = a_anchor_rw_seconds - cue_1_srt_start
 
