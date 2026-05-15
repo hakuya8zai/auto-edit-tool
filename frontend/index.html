@@ -4,160 +4,287 @@
 <meta charset="utf-8" />
 <title>block-sorter</title>
 <style>
+  /* ---- Design tokens (Linear-inspired, monochrome with one accent) ---- */
+  :root {
+    --canvas:        #f9f9fb;
+    --surface-1:     #ffffff;
+    --surface-2:     #f4f4f6;
+    --surface-3:     #edeef1;
+    --hairline:      #e3e4e8;
+    --hairline-strong:#cdced3;
+
+    --ink:           #1f2024;
+    --ink-muted:     #4a4c54;
+    --ink-subtle:    #8a8f98;
+    --ink-tertiary:  #b1b5bd;
+
+    --accent:        #5e6ad2;
+    --accent-hover:  #828fff;
+    --accent-pressed:#5e69d1;
+    --accent-soft:   #eef0fb;
+    --warn:          #b3580d;
+    --warn-soft:     #fef3e8;
+
+    --r-sm: 6px;
+    --r-md: 8px;
+    --r-lg: 10px;
+    --r-pill: 9999px;
+
+    --s-1: 4px;
+    --s-2: 8px;
+    --s-3: 12px;
+    --s-4: 16px;
+    --s-5: 24px;
+    --s-6: 32px;
+
+    --shadow-1: 0 1px 2px rgba(15, 16, 17, 0.04), 0 0 0 1px rgba(15, 16, 17, 0.02);
+    --shadow-2: 0 4px 14px rgba(15, 16, 17, 0.10), 0 0 0 1px rgba(15, 16, 17, 0.04);
+
+    --font: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+            "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  }
+
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-                 "PingFang TC", "Microsoft JhengHei", sans-serif;
-    padding: 8px 4px;
-    color: #1f1f1f;
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--ink);
     background: transparent;
+    padding: 4px 0 12px;
+    letter-spacing: -0.005em;
   }
+
+  /* ---- Catcher (sticky drop zone for auto-route) ---- */
+  #catcher {
+    height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px dashed var(--hairline-strong);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    color: var(--ink-subtle);
+    font-size: 12px;
+    letter-spacing: 0.01em;
+    margin: 0 0 var(--s-4);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  #catcher.hot {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  #catcher .item { display: none; }
+
+  /* ---- Containers ---- */
   .container {
-    border: 1px solid #ddd;
-    border-radius: 10px;
-    padding: 12px 14px;
-    margin-bottom: 14px;
-    background: #fafafa;
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-lg);
+    padding: var(--s-3);
+    margin-bottom: var(--s-3);
   }
   .container.assembly {
-    background: #fff8e1;
-    border-color: #ffb300;
-    border-width: 2px;
+    border: 1px solid var(--accent);
+    background: linear-gradient(180deg, rgba(94,106,210,0.04), transparent 24px), var(--surface-1);
   }
+
   .header {
-    font-weight: 700;
-    font-size: 14px;
-    margin-bottom: 10px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: var(--s-2);
+    padding: 0 var(--s-1);
+    color: var(--ink);
   }
-  .header .meta { font-weight: 400; color: #666; font-size: 12px; }
-  .items {
-    min-height: 50px;
-    border: 2px dashed transparent;
-    border-radius: 6px;
-    padding: 4px;
-    transition: border-color 0.1s;
-  }
-  .items.empty { border-color: #ddd; }
-  .items.horizontal {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .items.vertical {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .item {
-    padding: 8px 10px;
-    background: white;
-    border: 1px solid #ccc;
-    border-radius: 6px;
-    cursor: grab;
+  .header .title {
     font-size: 13px;
-    line-height: 1.4;
-    user-select: none;
-    transition: box-shadow 0.1s, transform 0.1s;
-    width: 180px;
-    flex: 0 0 180px;
-    min-height: 60px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
   }
-  .item:hover {
-    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-    border-color: #888;
-  }
-  .item:active { cursor: grabbing; }
-  /* uniform card size whether in assembly or categories */
-  .item.horizontal,
-  .item.vertical { width: 180px; flex: 0 0 180px; }
-  .item .role {
-    display: inline-block;
-    font-size: 10px;
-    color: #888;
-    background: #eee;
-    padding: 1px 6px;
-    border-radius: 3px;
-    margin-right: 6px;
-  }
-  .item .idx {
-    display: inline-block;
-    background: #ff8f00;
-    color: white;
-    padding: 1px 8px;
-    border-radius: 10px;
-    font-weight: 700;
+  .header .meta {
     font-size: 11px;
-    margin-right: 6px;
+    font-weight: 500;
+    color: var(--ink-subtle);
+    font-variant-numeric: tabular-nums;
   }
-  .item .name { font-weight: 600; }
-  .item .quote {
-    color: #555; font-size: 11px; margin-top: 3px; font-style: italic;
+
+  /* ---- Items area ---- */
+  .items {
+    min-height: 40px;
+    border-radius: var(--r-md);
+    padding: var(--s-1);
+    transition: background 0.1s;
   }
-  .item .secs { font-size: 11px; color: #999; float: right; }
-  .item .cues {
-    color: #777;
-    font-size: 11px;
-    margin-top: 3px;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  .items.empty {
+    background: var(--surface-2);
   }
-  .ghost { opacity: 0.4; background: #fffde7; }
-  .drag {
-    cursor: grabbing !important;
-    box-shadow: 0 6px 14px rgba(0,0,0,0.18);
-  }
+  .items.horizontal { display: flex; flex-direction: column; gap: var(--s-2); }
+  .items.vertical   { display: flex; flex-direction: column; gap: var(--s-2); }
+
+  /* ---- Layout: category row scrolls horizontally ---- */
   .row {
     display: flex;
     flex-direction: row;
     flex-wrap: nowrap;
-    gap: 10px;
-    margin-bottom: 14px;
+    gap: var(--s-3);
+    margin-bottom: var(--s-4);
     overflow-x: auto;
     overflow-y: visible;
-    padding-bottom: 8px;
+    padding-bottom: var(--s-2);
+    scrollbar-width: thin;
+  }
+  .row::-webkit-scrollbar { height: 8px; }
+  .row::-webkit-scrollbar-thumb {
+    background: var(--hairline-strong);
+    border-radius: var(--r-pill);
   }
   .row .container {
     margin-bottom: 0;
-    flex: 0 0 240px;
-    min-width: 240px;
-    max-width: 240px;
+    flex: 0 0 220px;
+    min-width: 220px;
+    max-width: 220px;
   }
-  .row .container .header { font-size: 13px; }
-  .row .items.horizontal {
-    /* Inside a fixed-width column, items stack vertically so the
-       column itself doesn't have to grow horizontally. */
-    flex-direction: column;
-    flex-wrap: nowrap;
+
+  /* ---- The card itself ---- */
+  .item {
+    position: relative;
+    background: var(--surface-1);
+    border: 1px solid var(--hairline);
+    border-radius: var(--r-md);
+    padding: var(--s-2) var(--s-3);
+    cursor: grab;
+    user-select: none;
+    transition: border-color 0.1s, box-shadow 0.1s, transform 0.1s;
+    box-shadow: var(--shadow-1);
   }
-  .row .item.horizontal { width: 100%; flex: 0 0 auto; }
-  .empty-msg {
-    color: #999;
+  .container.assembly .item {
+    background: var(--surface-1);
+  }
+  .item:hover {
+    border-color: var(--hairline-strong);
+    box-shadow: var(--shadow-2);
+  }
+  .item:active { cursor: grabbing; }
+  .item.ghost { opacity: 0.35; background: var(--accent-soft); }
+  .item.drag {
+    cursor: grabbing;
+    box-shadow: 0 12px 32px rgba(15, 16, 17, 0.18);
+    transform: rotate(0.5deg);
+  }
+
+  /* ---- Card summary row (always visible) ---- */
+  .item .summary {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    min-width: 0;
+  }
+  .item .role-dot {
+    width: 18px; height: 18px;
+    border-radius: var(--r-sm);
+    background: var(--surface-2);
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    font-size: 11px;
+    line-height: 1;
+    flex: 0 0 18px;
+  }
+  .item .idx {
+    display: none;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    padding: 2px 6px;
+    border-radius: var(--r-pill);
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+  }
+  .container.assembly .item .idx { display: inline-flex; }
+  .item .name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .item .secs {
+    font-size: 11px;
+    color: var(--ink-subtle);
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
+  }
+  .item .expand-btn {
+    border: 0;
+    background: transparent;
+    color: var(--ink-tertiary);
+    cursor: pointer;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    border-radius: var(--r-sm);
+    font-size: 10px;
+    line-height: 1;
+    transition: color 0.1s, background 0.1s;
+    flex: 0 0 auto;
+  }
+  .item .expand-btn:hover {
+    color: var(--ink);
+    background: var(--surface-2);
+  }
+  .item .expand-btn::before {
+    content: "▸";
+    display: inline-block;
+    transition: transform 0.12s;
+  }
+  .item.expanded .expand-btn::before {
+    transform: rotate(90deg);
+  }
+
+  /* ---- Detail (hidden until expanded) ---- */
+  .item .detail {
+    display: none;
+    margin-top: var(--s-2);
+    padding-top: var(--s-2);
+    border-top: 1px solid var(--hairline);
     font-size: 12px;
-    padding: 8px;
+    line-height: 1.5;
+  }
+  .item.expanded .detail { display: block; }
+  .item .detail .meta-row {
+    display: flex;
+    gap: var(--s-3);
+    flex-wrap: wrap;
+    color: var(--ink-subtle);
+    font-variant-numeric: tabular-nums;
+    margin-bottom: var(--s-2);
+  }
+  .item .detail .meta-row code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    background: var(--surface-2);
+    padding: 1px 6px;
+    border-radius: var(--r-sm);
+    color: var(--ink-muted);
+  }
+  .item .detail .quote {
+    color: var(--ink-muted);
+    font-style: italic;
+    border-left: 2px solid var(--hairline);
+    padding-left: var(--s-2);
+  }
+
+  .empty-msg {
+    color: var(--ink-tertiary);
+    font-size: 12px;
+    padding: var(--s-3);
     text-align: center;
   }
-  #catcher {
-    border: 2px dashed #ccc;
-    border-radius: 10px;
-    padding: 12px;
-    text-align: center;
-    color: #888;
-    margin-bottom: 14px;
-    background: #fafafa;
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    transition: background 0.1s, border-color 0.1s, color 0.1s;
-  }
-  #catcher.hot {
-    background: #fff3e0;
-    border-color: #ff9800;
-    color: #e65100;
-  }
-  #catcher .item { display: none; }  /* never keep items inside */
 </style>
 </head>
 <body>
@@ -191,10 +318,10 @@ function escapeHtml(s) {
   })[c]);
 }
 
-// ====== State (persisted across renders) ======
 let sortableInstances = [];
-let lastEmittedFingerprint = null;   // what we last reported to Streamlit
-let lastRenderedFingerprint = null;  // what's currently in the DOM
+let lastEmittedFingerprint = null;
+let lastRenderedFingerprint = null;
+const expandedIds = new Set();  // persisted across rerenders
 
 function readDomState() {
   const lists = document.querySelectorAll(".items");
@@ -203,14 +330,11 @@ function readDomState() {
   );
 }
 
-function fingerprint(state) {
-  return JSON.stringify(state);
-}
+function fingerprint(state) { return JSON.stringify(state); }
 
 function emitState() {
   const state = readDomState();
   const fp = fingerprint(state);
-  // Only emit if state actually changed since last emit/render
   if (fp !== lastEmittedFingerprint) {
     lastEmittedFingerprint = fp;
     lastRenderedFingerprint = fp;
@@ -218,31 +342,53 @@ function emitState() {
   }
 }
 
-// ====== Rendering ======
+// ====== Card rendering ======
 function makeItem(item, layout) {
   const el = document.createElement("div");
   el.className = "item " + layout;
   el.dataset.id = item.id;
-  if (item.role_key) el.dataset.role = item.role_key;  // for auto-route
-  if (item.html) {
-    el.innerHTML = item.html;
-  } else {
-    const idxBadge = `<span class="idx" style="display:none">#?</span>`;
-    const role = item.role
-      ? `<span class="role">${escapeHtml(item.role)}</span>` : "";
-    const secs = item.secs != null
-      ? `<span class="secs">~${escapeHtml(item.secs)}s</span>` : "";
-    const name = `<span class="name">${escapeHtml(item.name || "?")}</span>`;
-    const cues = item.cue_range
-      ? `<div class="cues">cues <b>${escapeHtml(item.cue_range)}</b>`
-        + (item.srt_range ? ` · ${escapeHtml(item.srt_range)}` : "")
-        + `</div>`
-      : "";
-    const quote = item.quote
-      ? `<div class="quote">「${escapeHtml(item.quote.slice(0, 80))}${item.quote.length > 80 ? "…" : ""}」</div>`
-      : "";
-    el.innerHTML = `<div>${idxBadge}${role}${name}${secs}</div>${cues}${quote}`;
-  }
+  if (item.role_key) el.dataset.role = item.role_key;
+  if (expandedIds.has(item.id)) el.classList.add("expanded");
+
+  const roleEmoji = (item.role || "").trim().split(" ")[0] || "•";
+  const name = escapeHtml(item.name || "?");
+  const secs = item.secs != null ? `~${escapeHtml(item.secs)}s` : "";
+  const cueRange = escapeHtml(item.cue_range || "");
+  const srtRange = escapeHtml(item.srt_range || "");
+  const quoteRaw = item.quote || "";
+  const quote = escapeHtml(quoteRaw.slice(0, 200))
+              + (quoteRaw.length > 200 ? "…" : "");
+
+  el.innerHTML = `
+    <div class="summary">
+      <span class="role-dot" title="${escapeHtml(item.role || "")}">${escapeHtml(roleEmoji)}</span>
+      <span class="idx">#?</span>
+      <span class="name" title="${name}">${name}</span>
+      <span class="secs">${secs}</span>
+      <button class="expand-btn" type="button" aria-label="展開細節"></button>
+    </div>
+    <div class="detail">
+      <div class="meta-row">
+        ${cueRange ? `<span>cues <code>${cueRange}</code></span>` : ""}
+        ${srtRange ? `<span>SRT <code>${srtRange}</code></span>` : ""}
+      </div>
+      ${quote ? `<div class="quote">「${quote}」</div>` : ""}
+    </div>
+  `;
+
+  const btn = el.querySelector(".expand-btn");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    el.classList.toggle("expanded");
+    if (el.classList.contains("expanded")) expandedIds.add(item.id);
+    else expandedIds.delete(item.id);
+    setHeight();
+  });
+  // Stop drag from starting on the button.
+  btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+  btn.addEventListener("mousedown", (e) => e.stopPropagation());
+
   return el;
 }
 
@@ -253,6 +399,7 @@ function makeContainer(c, layout, isAssembly) {
   const header = document.createElement("div");
   header.className = "header";
   const titleSpan = document.createElement("span");
+  titleSpan.className = "title";
   titleSpan.innerHTML = c.header || "";
   header.appendChild(titleSpan);
   if (c.meta) {
@@ -265,7 +412,7 @@ function makeContainer(c, layout, isAssembly) {
 
   const itemsDiv = document.createElement("div");
   itemsDiv.className = "items " + layout;
-  if (c.role) itemsDiv.dataset.role = c.role;  // for auto-route
+  if (c.role) itemsDiv.dataset.role = c.role;
   if (!c.items || c.items.length === 0) {
     itemsDiv.classList.add("empty");
     const empty = document.createElement("div");
@@ -280,25 +427,21 @@ function makeContainer(c, layout, isAssembly) {
 }
 
 function destroyAllSortables() {
-  sortableInstances.forEach((s) => {
-    try { s.destroy(); } catch (e) {}
-  });
+  sortableInstances.forEach((s) => { try { s.destroy(); } catch (e) {} });
   sortableInstances = [];
 }
 
 function updateAssemblyIndices() {
-  // Hide all idx badges first (cards in pool shouldn't show index)
   document.querySelectorAll(".item .idx").forEach((b) => {
     b.style.display = "none";
   });
-  // Then number cards in the assembly container 1, 2, 3, ...
   const assemblyList = document.querySelector(".container.assembly .items");
   if (!assemblyList) return;
   Array.from(assemblyList.querySelectorAll(".item")).forEach((el, i) => {
     const badge = el.querySelector(".idx");
     if (badge) {
-      badge.style.display = "inline-block";
-      badge.textContent = `#${i + 1}`;
+      badge.style.display = "inline-flex";
+      badge.textContent = `${i + 1}`;
     }
   });
 }
@@ -320,48 +463,33 @@ function fixEmptyState(list) {
   }
 }
 
-function fixLayoutClass(item, container) {
-  // Container's items list has class 'horizontal' or 'vertical'
-  const isHor = container.classList.contains("horizontal");
-  item.classList.remove("horizontal", "vertical");
-  item.classList.add(isHor ? "horizontal" : "vertical");
-}
-
 function setupSortables() {
   destroyAllSortables();
   document.querySelectorAll(".items").forEach((list) => {
     sortableInstances.push(new Sortable(list, {
       group: "blocks",
-      animation: 150,
+      animation: 160,
       ghostClass: "ghost",
       dragClass: "drag",
-      // Only .item elements are draggable; the (空) placeholder is not.
-      // This fixes a first-drag-snaps-back bug where the placeholder
-      // got picked up as a drag source.
       draggable: ".item",
-      filter: ".empty-msg",
-      // forceFallback gives consistent behavior inside Streamlit iframes
-      // (native HTML5 drag occasionally drops the first event).
+      filter: ".empty-msg, .expand-btn",
+      preventOnFilter: false,
       forceFallback: true,
       fallbackOnBody: true,
       onEnd: (evt) => {
         if (evt.from) fixEmptyState(evt.from);
-        if (evt.to && evt.to !== evt.from) {
-          fixEmptyState(evt.to);
-          fixLayoutClass(evt.item, evt.to);
-        }
+        if (evt.to && evt.to !== evt.from) fixEmptyState(evt.to);
         updateAssemblyIndices();
         emitState();
       },
     }));
   });
 
-  // Catcher: drop here = auto-route to item's narrative_role category
   const catcher = document.getElementById("catcher");
   if (catcher) {
     sortableInstances.push(new Sortable(catcher, {
       group: { name: "blocks", pull: false, put: true },
-      animation: 150,
+      animation: 160,
       ghostClass: "ghost",
       draggable: ".item",
       forceFallback: true,
@@ -372,16 +500,11 @@ function setupSortables() {
         let target = role
           ? document.querySelector(`.items[data-role="${role}"]`)
           : null;
-        if (!target) {
-          // No matching category — fallback to first category container
-          target = document.querySelector(".row .items");
-        }
+        if (!target) target = document.querySelector(".row .items");
         if (target) {
           target.appendChild(item);
-          fixLayoutClass(item, target);
           fixEmptyState(target);
         }
-        // Catcher should never retain items; remove placeholder if any
         catcher.querySelectorAll(".item").forEach((el) => el.remove());
         updateAssemblyIndices();
         emitState();
@@ -395,18 +518,14 @@ function renderUI(args) {
   const root = document.getElementById("root");
   root.innerHTML = "";
 
-  // Auto-route catcher at the TOP — placed before the assembly so it's
-  // always reachable even when category columns get tall.
   const catcher = document.createElement("div");
   catcher.id = "catcher";
-  catcher.textContent = "🪄 把片段拖到這裡 → 自動歸位到該類別";
+  catcher.textContent = "拖到這裡 → 自動歸位到對應分類";
   root.appendChild(catcher);
 
   let rowDiv = null;
   containers.forEach((c, idx) => {
     const isAssembly = idx === 0;
-    // Use 'horizontal' wrap layout for ALL containers — uniform card size,
-    // assembly is just visually distinguished by the orange border.
     const layout = "horizontal";
     const { wrapper } = makeContainer(c, layout, isAssembly);
     if (isAssembly) {
@@ -425,27 +544,19 @@ function renderUI(args) {
   updateAssemblyIndices();
 }
 
-// ====== Streamlit render handler ======
 function onStreamlitRender(args) {
   const incoming = (args.containers || []).map((c) =>
     (c.items || []).map((i) => i.id)
   );
   const incomingFp = fingerprint(incoming);
 
-  // If incoming state matches what we just emitted, skip rebuild —
-  // this prevents flicker after user drag (Python re-renders with the
-  // exact state we just reported, no need to disturb the DOM).
   if (incomingFp === lastEmittedFingerprint && lastRenderedFingerprint) {
     setHeight();
     return;
   }
-
-  // Otherwise, args genuinely changed (regenerate, new theme, etc.):
-  // do a full rebuild.
   renderUI(args);
   lastRenderedFingerprint = incomingFp;
   lastEmittedFingerprint = incomingFp;
-  // No need to setValue here: Python already has this state.
   setHeight();
 }
 
