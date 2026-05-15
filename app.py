@@ -572,8 +572,12 @@ def render_setup():
                       "可從兩機都看得到的拍手 / 揮手動作目測。",
         )
 
-    a_path = "<<RELINK>>"
-    b_path = "<<RELINK>>"
+    # Distinct placeholders so Premiere's relink dialog treats A and B as
+    # separate missing files. If both are "<<RELINK>>" Premiere sees them
+    # as identical paths and auto-applies the user's first relink choice
+    # to both clips — pointing A and B at the same physical file.
+    a_path = "<<RELINK_A_CAMERA>>"
+    b_path = "<<RELINK_B_CAMERA>>"
 
     st.divider()
 
@@ -607,10 +611,20 @@ def render_setup():
 
     # ----- Start -----
     btn_label = "▶️ 開始" + ("(AI 直接掃描)" if is_seq else "(進入主題選擇)")
-    start_clicked = st.button(btn_label, type="primary",
-                              use_container_width=True)
+    loading_flag = "setup_loading"
+    is_loading = st.session_state.get(loading_flag, False)
+    start_clicked = st.button(
+        ("⏳ 載入中…" if is_loading else btn_label),
+        type="primary",
+        use_container_width=True,
+        disabled=is_loading,
+    )
     status_slot = st.empty()
-    if start_clicked:
+
+    # Two-phase: first click sets the flag and reruns so the button
+    # re-renders as disabled. Second pass (with flag set) actually runs
+    # the LLM call.
+    if start_clicked and not is_loading:
         errors = []
         if not uploaded: errors.append("請先上傳 SRT 檔案")
         if not api_key: errors.append(f"請在左側輸入 {provider} API key")
@@ -648,11 +662,11 @@ def render_setup():
             "target_duration_seconds": float(target_seconds),
             "padding": float(padding),
         }
-        next_stage = "preset_pick" if is_seq else "theme_pick"
-        st.session_state["stage"] = next_stage
+        st.session_state[loading_flag] = True
+        st.rerun()
 
-        # Pre-fetch the LLM result HERE so the user sees the spinner
-        # immediately on this page rather than a blank rerun.
+    if is_loading:
+        # Second-phase: button is already showing disabled, now do the work.
         spinner_msg = (
             "🤖 正在掃描 SRT 找移除候選..." if is_seq
             else "🤖 正在從 SRT 產生主題提案..."
@@ -665,12 +679,13 @@ def render_setup():
                     else:
                         st.session_state["themes"] = fetch_themes()
                 except Exception as e:
+                    st.session_state[loading_flag] = False
                     st.error(f"LLM 呼叫失敗:{e}")
-                    # Stay on this page so user can fix and retry.
-                    st.session_state["stage"] = (
-                        "setup_sequential" if is_seq else "setup_highlight"
-                    )
                     return
+        st.session_state[loading_flag] = False
+        st.session_state["stage"] = (
+            "preset_pick" if is_seq else "theme_pick"
+        )
         st.rerun()
 
 
@@ -981,10 +996,21 @@ def render_block_builder():
     if result and isinstance(result, list) and len(result) > 0:
         new_selected_ids = [bid for bid in result[0] if bid in pool]
         flat_order = list(new_selected_ids)
-        for cat_list in result[1:]:
+        # Persist the user's category choice: when a card is dropped into a
+        # category column whose role doesn't match its narrative_role, we
+        # rewrite the block's narrative_role so the next re-render keeps it
+        # in the destination column. Without this, the per-role grouping
+        # snaps the card back, looking like a failed drag.
+        for cat_idx, cat_list in enumerate(result[1:]):
+            target_role = (
+                ROLE_ORDER[cat_idx] if cat_idx < len(ROLE_ORDER) else None
+            )
             for bid in cat_list:
-                if bid in pool and bid not in flat_order:
-                    flat_order.append(bid)
+                if bid in pool:
+                    if target_role and pool[bid].get("narrative_role") != target_role:
+                        pool[bid]["narrative_role"] = target_role
+                    if bid not in flat_order:
+                        flat_order.append(bid)
         # Append any orphaned items (shouldn't happen normally)
         for bid in pool:
             if bid not in flat_order:
@@ -1301,15 +1327,15 @@ def render_review():
                 "實際內容(從 SRT 取出)": actual_text[:80] + ("…" if len(actual_text) > 80 else ""),
             })
 
-        # Overlap detection — any cue number that appears in 2+ cuts will
-        # be played multiple times in the rendered output. Warn explicitly.
+        # Overlap detection — backstop in case the partition enforcement
+        # in fetch_blocks_for_theme misses an edge case. With the new
+        # disjoint-pool design (PR #4) this warning should rarely fire.
         cue_to_cuts = {}
         for idx, cue_set, _, _ in cut_cue_sets:
             for n in cue_set:
                 cue_to_cuts.setdefault(n, []).append(idx)
         duplicated_cues = {n: cuts for n, cuts in cue_to_cuts.items() if len(cuts) > 1}
         if duplicated_cues:
-            # Group by which cuts overlap (instead of per-cue spam)
             pair_to_cues = {}
             for n, idxs in duplicated_cues.items():
                 key = tuple(sorted(idxs))
