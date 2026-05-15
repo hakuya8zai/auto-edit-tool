@@ -4,7 +4,6 @@
 <meta charset="utf-8" />
 <title>block-sorter</title>
 <style>
-  /* ---- Design tokens (Linear-inspired, monochrome with one accent) ---- */
   :root {
     --canvas:        #f9f9fb;
     --surface-1:     #ffffff;
@@ -20,10 +19,7 @@
 
     --accent:        #5e6ad2;
     --accent-hover:  #828fff;
-    --accent-pressed:#5e69d1;
     --accent-soft:   #eef0fb;
-    --warn:          #b3580d;
-    --warn-soft:     #fef3e8;
 
     --r-sm: 6px;
     --r-md: 8px;
@@ -35,7 +31,6 @@
     --s-3: 12px;
     --s-4: 16px;
     --s-5: 24px;
-    --s-6: 32px;
 
     --shadow-1: 0 1px 2px rgba(15, 16, 17, 0.04), 0 0 0 1px rgba(15, 16, 17, 0.02);
     --shadow-2: 0 4px 14px rgba(15, 16, 17, 0.10), 0 0 0 1px rgba(15, 16, 17, 0.04);
@@ -56,29 +51,6 @@
     letter-spacing: -0.005em;
   }
 
-  /* ---- Catcher (sticky drop zone for auto-route) ---- */
-  #catcher {
-    height: 36px;
-    display: flex; align-items: center; justify-content: center;
-    border: 1px dashed var(--hairline-strong);
-    border-radius: var(--r-md);
-    background: var(--surface-2);
-    color: var(--ink-subtle);
-    font-size: 12px;
-    letter-spacing: 0.01em;
-    margin: 0 0 var(--s-4);
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-  #catcher.hot {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  #catcher .item { display: none; }
-
   /* ---- Containers ---- */
   .container {
     background: var(--surface-1);
@@ -89,19 +61,21 @@
   }
   .container.assembly {
     border: 1px solid var(--accent);
-    background: linear-gradient(180deg, rgba(94,106,210,0.04), transparent 24px), var(--surface-1);
+    background:
+      linear-gradient(180deg, rgba(94,106,210,0.05), transparent 60px),
+      var(--surface-1);
   }
 
   .header {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: var(--s-2);
+    margin-bottom: var(--s-3);
     padding: 0 var(--s-1);
-    color: var(--ink);
   }
   .header .title {
     font-size: 13px;
     font-weight: 600;
     letter-spacing: -0.01em;
+    color: var(--ink);
   }
   .header .meta {
     font-size: 11px;
@@ -110,20 +84,16 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* ---- Items area ---- */
   .items {
-    min-height: 40px;
+    min-height: 48px;
     border-radius: var(--r-md);
     padding: var(--s-1);
-    transition: background 0.1s;
   }
-  .items.empty {
-    background: var(--surface-2);
-  }
-  .items.horizontal { display: flex; flex-direction: column; gap: var(--s-2); }
-  .items.vertical   { display: flex; flex-direction: column; gap: var(--s-2); }
+  .items.empty { background: var(--surface-2); }
+  .items.horizontal,
+  .items.vertical { display: flex; flex-direction: column; gap: var(--s-2); }
 
-  /* ---- Layout: category row scrolls horizontally ---- */
+  /* Category row — horizontal scroll, fixed-width columns */
   .row {
     display: flex;
     flex-direction: row;
@@ -142,141 +112,116 @@
   }
   .row .container {
     margin-bottom: 0;
-    flex: 0 0 220px;
-    min-width: 220px;
-    max-width: 220px;
+    flex: 0 0 240px;
+    min-width: 240px;
+    max-width: 240px;
   }
 
-  /* ---- The card itself ---- */
+  /* ---- Card ---- */
   .item {
     position: relative;
     background: var(--surface-1);
     border: 1px solid var(--hairline);
     border-radius: var(--r-md);
-    padding: var(--s-2) var(--s-3);
+    padding: var(--s-2) var(--s-3) var(--s-3);
     cursor: grab;
     user-select: none;
     transition: border-color 0.1s, box-shadow 0.1s, transform 0.1s;
     box-shadow: var(--shadow-1);
-  }
-  .container.assembly .item {
-    background: var(--surface-1);
   }
   .item:hover {
     border-color: var(--hairline-strong);
     box-shadow: var(--shadow-2);
   }
   .item:active { cursor: grabbing; }
-  .item.ghost { opacity: 0.35; background: var(--accent-soft); }
+  .item.ghost {
+    opacity: 0.35;
+    background: var(--accent-soft);
+    border-style: dashed;
+  }
   .item.drag {
     cursor: grabbing;
-    box-shadow: 0 12px 32px rgba(15, 16, 17, 0.18);
-    transform: rotate(0.5deg);
+    box-shadow: 0 14px 36px rgba(15, 16, 17, 0.22);
+    transform: rotate(0.6deg);
   }
 
-  /* ---- Card summary row (always visible) ---- */
-  .item .summary {
+  /* Row 1: role pill + index badge + duration */
+  .item .row1 {
     display: flex;
     align-items: center;
     gap: var(--s-2);
-    min-width: 0;
+    margin-bottom: 6px;
   }
-  .item .role-dot {
-    width: 18px; height: 18px;
-    border-radius: var(--r-sm);
+  .item .role {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--ink-muted);
     background: var(--surface-2);
-    display: inline-flex;
-    align-items: center; justify-content: center;
-    font-size: 11px;
-    line-height: 1;
-    flex: 0 0 18px;
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    flex: 0 0 auto;
   }
   .item .idx {
     display: none;
     font-size: 10px;
-    font-weight: 600;
-    color: var(--accent);
-    background: var(--accent-soft);
-    padding: 2px 6px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--accent);
+    padding: 2px 7px;
     border-radius: var(--r-pill);
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
   }
   .container.assembly .item .idx { display: inline-flex; }
-  .item .name {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--ink);
-    letter-spacing: -0.01em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
+  .item .spacer { flex: 1 1 auto; }
   .item .secs {
     font-size: 11px;
     color: var(--ink-subtle);
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
   }
-  .item .expand-btn {
-    border: 0;
-    background: transparent;
-    color: var(--ink-tertiary);
-    cursor: pointer;
-    padding: 2px 4px;
-    margin: -2px -4px;
-    border-radius: var(--r-sm);
-    font-size: 10px;
-    line-height: 1;
-    transition: color 0.1s, background 0.1s;
-    flex: 0 0 auto;
-  }
-  .item .expand-btn:hover {
+
+  /* Row 2: name (semibold, can wrap to 2 lines) */
+  .item .name {
+    font-size: 13px;
+    font-weight: 600;
     color: var(--ink);
-    background: var(--surface-2);
-  }
-  .item .expand-btn::before {
-    content: "▸";
-    display: inline-block;
-    transition: transform 0.12s;
-  }
-  .item.expanded .expand-btn::before {
-    transform: rotate(90deg);
+    letter-spacing: -0.01em;
+    line-height: 1.35;
+    margin-bottom: 4px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
   }
 
-  /* ---- Detail (hidden until expanded) ---- */
-  .item .detail {
-    display: none;
-    margin-top: var(--s-2);
-    padding-top: var(--s-2);
-    border-top: 1px solid var(--hairline);
-    font-size: 12px;
+  /* Row 3: SRT preview text — 2 lines max */
+  .item .quote {
+    font-size: 11.5px;
+    color: var(--ink-muted);
     line-height: 1.5;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
   }
-  .item.expanded .detail { display: block; }
-  .item .detail .meta-row {
-    display: flex;
-    gap: var(--s-3);
-    flex-wrap: wrap;
-    color: var(--ink-subtle);
-    font-variant-numeric: tabular-nums;
-    margin-bottom: var(--s-2);
-  }
-  .item .detail .meta-row code {
+  .item .quote::before { content: "「"; color: var(--ink-tertiary); }
+  .item .quote::after  { content: "」"; color: var(--ink-tertiary); }
+
+  /* Row 4: meta (cue range + SRT time) — small, monospace */
+  .item .meta-line {
+    margin-top: 6px;
+    font-size: 10.5px;
+    color: var(--ink-tertiary);
     font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-    font-size: 11px;
-    background: var(--surface-2);
-    padding: 1px 6px;
-    border-radius: var(--r-sm);
-    color: var(--ink-muted);
-  }
-  .item .detail .quote {
-    color: var(--ink-muted);
-    font-style: italic;
-    border-left: 2px solid var(--hairline);
-    padding-left: var(--s-2);
+    font-variant-numeric: tabular-nums;
+    display: flex;
+    gap: var(--s-2);
+    flex-wrap: wrap;
   }
 
   .empty-msg {
@@ -294,7 +239,6 @@
 <script>
 "use strict";
 
-// ====== Streamlit bridge ======
 const RENDER_EVT = "streamlit:render";
 const READY_EVT = "streamlit:componentReady";
 const SET_VALUE_EVT = "streamlit:setComponentValue";
@@ -321,7 +265,6 @@ function escapeHtml(s) {
 let sortableInstances = [];
 let lastEmittedFingerprint = null;
 let lastRenderedFingerprint = null;
-const expandedIds = new Set();  // persisted across rerenders
 
 function readDomState() {
   const lists = document.querySelectorAll(".items");
@@ -342,53 +285,37 @@ function emitState() {
   }
 }
 
-// ====== Card rendering ======
 function makeItem(item, layout) {
   const el = document.createElement("div");
   el.className = "item " + layout;
   el.dataset.id = item.id;
   if (item.role_key) el.dataset.role = item.role_key;
-  if (expandedIds.has(item.id)) el.classList.add("expanded");
 
-  const roleEmoji = (item.role || "").trim().split(" ")[0] || "•";
+  const roleLabel = escapeHtml((item.role || "").trim());
   const name = escapeHtml(item.name || "?");
   const secs = item.secs != null ? `~${escapeHtml(item.secs)}s` : "";
   const cueRange = escapeHtml(item.cue_range || "");
   const srtRange = escapeHtml(item.srt_range || "");
   const quoteRaw = item.quote || "";
-  const quote = escapeHtml(quoteRaw.slice(0, 200))
-              + (quoteRaw.length > 200 ? "…" : "");
+  const quote = escapeHtml(quoteRaw.slice(0, 120))
+              + (quoteRaw.length > 120 ? "…" : "");
 
   el.innerHTML = `
-    <div class="summary">
-      <span class="role-dot" title="${escapeHtml(item.role || "")}">${escapeHtml(roleEmoji)}</span>
+    <div class="row1">
       <span class="idx">#?</span>
-      <span class="name" title="${name}">${name}</span>
-      <span class="secs">${secs}</span>
-      <button class="expand-btn" type="button" aria-label="展開細節"></button>
+      ${roleLabel ? `<span class="role">${roleLabel}</span>` : ""}
+      <span class="spacer"></span>
+      ${secs ? `<span class="secs">${secs}</span>` : ""}
     </div>
-    <div class="detail">
-      <div class="meta-row">
-        ${cueRange ? `<span>cues <code>${cueRange}</code></span>` : ""}
-        ${srtRange ? `<span>SRT <code>${srtRange}</code></span>` : ""}
+    <div class="name">${name}</div>
+    ${quote ? `<div class="quote">${quote}</div>` : ""}
+    ${(cueRange || srtRange) ? `
+      <div class="meta-line">
+        ${cueRange ? `<span>cues ${cueRange}</span>` : ""}
+        ${srtRange ? `<span>${srtRange}</span>` : ""}
       </div>
-      ${quote ? `<div class="quote">「${quote}」</div>` : ""}
-    </div>
+    ` : ""}
   `;
-
-  const btn = el.querySelector(".expand-btn");
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    e.preventDefault();
-    el.classList.toggle("expanded");
-    if (el.classList.contains("expanded")) expandedIds.add(item.id);
-    else expandedIds.delete(item.id);
-    setHeight();
-  });
-  // Stop drag from starting on the button.
-  btn.addEventListener("pointerdown", (e) => e.stopPropagation());
-  btn.addEventListener("mousedown", (e) => e.stopPropagation());
-
   return el;
 }
 
@@ -472,10 +399,10 @@ function setupSortables() {
       ghostClass: "ghost",
       dragClass: "drag",
       draggable: ".item",
-      filter: ".empty-msg, .expand-btn",
-      preventOnFilter: false,
-      forceFallback: true,
-      fallbackOnBody: true,
+      filter: ".empty-msg",
+      // Use native HTML5 drag — Streamlit iframe + forceFallback has
+      // proven flaky (intermittent first-drag snap-back).
+      forceFallback: false,
       onEnd: (evt) => {
         if (evt.from) fixEmptyState(evt.from);
         if (evt.to && evt.to !== evt.from) fixEmptyState(evt.to);
@@ -484,33 +411,6 @@ function setupSortables() {
       },
     }));
   });
-
-  const catcher = document.getElementById("catcher");
-  if (catcher) {
-    sortableInstances.push(new Sortable(catcher, {
-      group: { name: "blocks", pull: false, put: true },
-      animation: 160,
-      ghostClass: "ghost",
-      draggable: ".item",
-      forceFallback: true,
-      fallbackOnBody: true,
-      onAdd: (evt) => {
-        const item = evt.item;
-        const role = item.dataset.role;
-        let target = role
-          ? document.querySelector(`.items[data-role="${role}"]`)
-          : null;
-        if (!target) target = document.querySelector(".row .items");
-        if (target) {
-          target.appendChild(item);
-          fixEmptyState(target);
-        }
-        catcher.querySelectorAll(".item").forEach((el) => el.remove());
-        updateAssemblyIndices();
-        emitState();
-      },
-    }));
-  }
 }
 
 function renderUI(args) {
@@ -518,15 +418,10 @@ function renderUI(args) {
   const root = document.getElementById("root");
   root.innerHTML = "";
 
-  const catcher = document.createElement("div");
-  catcher.id = "catcher";
-  catcher.textContent = "拖到這裡 → 自動歸位到對應分類";
-  root.appendChild(catcher);
-
   let rowDiv = null;
   containers.forEach((c, idx) => {
     const isAssembly = idx === 0;
-    const layout = "horizontal";
+    const layout = "vertical";
     const { wrapper } = makeContainer(c, layout, isAssembly);
     if (isAssembly) {
       root.appendChild(wrapper);

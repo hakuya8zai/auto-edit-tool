@@ -263,7 +263,14 @@ B. Drop the parts that are mic checks, false starts, asides, fumbles,
    Q&A interruptions, irrelevant tangents, or content that doesn't fit
    the chosen theme.
 C. The remaining keep-worthy cues form your partition — split them into
-   12-20 SEGMENTS at natural topic boundaries.
+   12-20 SEGMENTS at natural SENTENCE / TOPIC boundaries. Each segment
+   must:
+   - Start at a sentence beginning (not mid-clause)
+   - End at a sentence ending (period, full pause)
+   - Be SELF-CONTAINED — the segment makes sense on its own without
+     needing the previous or next segment to resolve references
+   This is what makes adjacent segments cuttable in any order without
+   sounding choppy.
 D. For each segment, assign ONE narrative_role.
 
 narrative_role enum:
@@ -280,6 +287,21 @@ that forms a complete narrative arc:
     opener → (teaser?) → context → story/data/climax → closer
 The recommended_assembly may pick a SUBSET of segments (segments not on the
 list still appear in the user's pool — they can pick differently).
+
+⚠️ SEMANTIC FLOW IS CRITICAL — the recommended_assembly will be cut
+together back-to-back with no transitions. Read the chosen segments AS A
+SINGLE PARAGRAPH and make sure:
+- Adjacent segments connect smoothly: no mid-sentence cuts, no pronouns
+  referring to things only in earlier dropped segments, no jarring
+  topic jumps.
+- Each segment ends at a natural sentence boundary so the next segment's
+  opening sentence stands on its own.
+- The overall arc reads like the speaker said it in one breath, not
+  like a clip show.
+- Prefer slightly longer segments over shorter ones if it preserves
+  semantic continuity.
+If the only segments that fit the theme don't connect smoothly, it's
+better to return fewer segments than to assemble a choppy clip.
 
 **IMPORTANT: Respond in Traditional Chinese (zh-TW)** for `name`,
 `selling_point`. `hook_quote` is verbatim from SRT.
