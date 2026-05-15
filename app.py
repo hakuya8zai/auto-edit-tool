@@ -245,35 +245,44 @@ Respond with JSON ONLY:
 SYS_BLOCKS = """You are an SRT-to-Premiere editing assistant for Taiwanese users (highlight mode).
 
 Given an SRT, a chosen theme, target length, and camera availability,
-produce TWO things:
+PARTITION THE SRT TIMELINE INTO NON-OVERLAPPING SEGMENTS.
 
-⚠️ CRITICAL: cue_range MUST contain ONLY cue numbers that EXIST in the SRT.
-The SRT's cue numbers are bounded — check the maximum cue number in the SRT
-text I provide and never propose cues beyond it.
+⚠️ CRITICAL CONSTRAINTS:
+1. cue_range MUST contain ONLY cue numbers that EXIST in the SRT.
+2. **NO TWO BLOCKS MAY SHARE ANY CUE NUMBER.** Every cue belongs to at most
+   one block. This is a hard partition of the timeline.
+3. Filler / garbage / off-topic / repeated-themselves cues are DROPPED —
+   they simply don't appear in any block. (You don't need to cover every
+   cue; you need to cover only the keepable ones, disjointly.)
+4. Each block's cue_range MUST be a CONSECUTIVE range (e.g. "256-261",
+   not "256,259,261").
 
+Step-by-step process:
+A. Read the entire SRT and identify topic-coherent chunks.
+B. Drop the parts that are mic checks, false starts, asides, fumbles,
+   Q&A interruptions, irrelevant tangents, or content that doesn't fit
+   the chosen theme.
+C. The remaining keep-worthy cues form your partition — split them into
+   12-20 SEGMENTS at natural topic boundaries.
+D. For each segment, assign ONE narrative_role.
 
-1. A pool of 15-25 content BLOCKS, each tagged by `narrative_role` —
-   the role this block would play IN THE OUTPUT CLIP (not its position
-   in the source SRT).
+narrative_role enum:
+- opener  (吸睛開頭): hook quotes, contrast, shock data — for clip OPENING
+- teaser  (勾人 hook): suspense, tease, question — make viewer want to continue
+- context (鋪陳脈絡): scenario, background, premise
+- climax  (高潮金句): reveal, insight, twist — clip's emotional/intellectual peak
+- story   (動人故事): personal anecdote, case, emotion — grounds the message
+- data    (數據佐證): facts, numbers, research — strengthens persuasion
+- closer  (收尾呼籲): call to action, summary, hope — clip ENDING
 
-   narrative_role enum:
-   - opener  (吸睛開頭): hook quotes, contrast, shock data — for clip OPENING
-   - teaser  (勾人 hook): suspense, tease, question — make viewer want to continue
-   - context (鋪陳脈絡): scenario, background, premise
-   - climax  (高潮金句): reveal, insight, twist — clip's emotional/intellectual peak
-   - story   (動人故事): personal anecdote, case, emotion — grounds the message
-   - data    (數據佐證): facts, numbers, research — strengthens persuasion
-   - closer  (收尾呼籲): call to action, summary, hope — clip ENDING
-
-2. A `recommended_assembly` — an ordered list of 5-8 block IDs from the pool
-   that forms a complete narrative arc:
-       opener → (teaser?) → context → story/data/climax → closer
+Also produce a `recommended_assembly` — an ordered list of 5-8 segment IDs
+that forms a complete narrative arc:
+    opener → (teaser?) → context → story/data/climax → closer
+The recommended_assembly may pick a SUBSET of segments (segments not on the
+list still appear in the user's pool — they can pick differently).
 
 **IMPORTANT: Respond in Traditional Chinese (zh-TW)** for `name`,
 `selling_point`. `hook_quote` is verbatim from SRT.
-
-Distribute blocks across roles so the user has good options in each category.
-Aim for ≥2 blocks per role where the SRT material allows.
 
 Respond with JSON ONLY:
 {
@@ -820,6 +829,37 @@ def fetch_blocks_for_theme(theme, prev=None):
             + "\n".join(f"  - 「{n}」 `{old}` → `{new}`" for n, old, new in clipped)
         )
 
+    # Hard-enforce disjointness: walk blocks in SRT order and drop any block
+    # whose cue_range shares a cue with an earlier kept block. This makes
+    # the block pool a true partition (no cue appears in two blocks), so
+    # the user cannot accidentally pick overlapping content.
+    valid_blocks.sort(
+        key=lambda b: sorted(srt2xml.parse_cues(b["cue_range"]))[0]
+    )
+    seen_cues = set()
+    disjoint_blocks = []
+    overlap_dropped = []
+    for b in valid_blocks:
+        nums = set(srt2xml.parse_cues(b["cue_range"]))
+        clash = nums & seen_cues
+        if clash:
+            overlap_dropped.append(
+                (b.get("name"), b["cue_range"], sorted(clash))
+            )
+            continue
+        disjoint_blocks.append(b)
+        seen_cues |= nums
+    if overlap_dropped:
+        st.info(
+            f"ℹ️ LLM 提了 {len(overlap_dropped)} 個 block 跟其他 block 共用 cue,"
+            "為了避免內容重複,已丟掉後出現的:\n"
+            + "\n".join(
+                f"  - 「{n}」 cues `{r}` 跟既有 block 重疊在 `{sorted(c)}`"
+                for n, r, c in overlap_dropped
+            )
+        )
+    valid_blocks = disjoint_blocks
+
     blocks_by_id = {b["id"]: b for b in valid_blocks}
     valid_recommended = [rid for rid in recommended if rid in blocks_by_id]
     return blocks_by_id, valid_recommended
@@ -1251,22 +1291,29 @@ def render_review():
             return
         rows = []
         cues_dict = c["cues"]
+        cut_cue_sets = []  # for overlap detection
         for i, bid in enumerate(sel_ids):
             if bid not in pool: continue
             b = pool[bid]
             cue_range = b.get("cue_range", "")
             actual_text = ""
             srt_window = ""
+            cue_set = set()
             try:
                 cue_nums = srt2xml.parse_cues(cue_range)
                 present = [n for n in cue_nums if n in cues_dict]
+                cue_set = set(present)
                 if present:
                     actual_text = " ".join(cues_dict[n][2] for n in present)
                     s = min(cues_dict[n][0] for n in present)
                     e = max(cues_dict[n][1] for n in present)
-                    srt_window = f"{int(s//60)}:{s-int(s//60)*60:05.2f}–{int(e//60)}:{e-int(e//60)*60:05.2f}"
+                    srt_window = (
+                        f"{int(s//60)}:{s-int(s//60)*60:05.2f}"
+                        f"–{int(e//60)}:{e-int(e//60)*60:05.2f}"
+                    )
             except Exception:
                 pass
+            cut_cue_sets.append((i, cue_set, b.get("name", ""), cue_range))
             rows.append({
                 "#": i,
                 "鏡位": b.get("cam") or b.get("suggested_cam", "A"),
@@ -1275,6 +1322,34 @@ def render_review():
                 "narrative_role": b.get("narrative_role", ""),
                 "實際內容(從 SRT 取出)": actual_text[:80] + ("…" if len(actual_text) > 80 else ""),
             })
+
+        # Overlap detection — backstop in case the partition enforcement
+        # in fetch_blocks_for_theme misses an edge case. With the new
+        # disjoint-pool design (PR #4) this warning should rarely fire.
+        cue_to_cuts = {}
+        for idx, cue_set, _, _ in cut_cue_sets:
+            for n in cue_set:
+                cue_to_cuts.setdefault(n, []).append(idx)
+        duplicated_cues = {n: cuts for n, cuts in cue_to_cuts.items() if len(cuts) > 1}
+        if duplicated_cues:
+            pair_to_cues = {}
+            for n, idxs in duplicated_cues.items():
+                key = tuple(sorted(idxs))
+                pair_to_cues.setdefault(key, []).append(n)
+            lines = []
+            for key, ns in sorted(pair_to_cues.items()):
+                ns_sorted = sorted(ns)
+                if len(ns_sorted) > 1 and max(ns_sorted) - min(ns_sorted) == len(ns_sorted) - 1:
+                    n_str = f"{ns_sorted[0]}-{ns_sorted[-1]}"
+                else:
+                    n_str = ",".join(str(n) for n in ns_sorted)
+                lines.append(f"  • cuts **#{'、'.join(f'#{i}' for i in key)}** 都包含 cue `{n_str}`")
+            st.warning(
+                "⚠️ **內容重疊警告**——以下 cut 共用了相同的 cue,"
+                "這幾段內容會在輸出影片中重複播放:\n\n" + "\n".join(lines)
+                + "\n\n如果這不是你要的,回上一步調整 cue 範圍或拿掉重複的 cut。"
+            )
+
         st.caption("⚠️ **產出 XML 之前請對照「實際內容」這一欄**——這是 SRT 在這些 cue 範圍裡真正的逐字稿,不是 AI 給的標籤。")
         st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
