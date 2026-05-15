@@ -1228,17 +1228,67 @@ def render_review():
                 st.session_state["stage"] = "block_builder"; st.rerun()
             return
         rows = []
+        cues_dict = c["cues"]
+        cut_cue_sets = []  # for overlap detection
         for i, bid in enumerate(sel_ids):
             if bid not in pool: continue
             b = pool[bid]
+            cue_range = b.get("cue_range", "")
+            actual_text = ""
+            srt_window = ""
+            cue_set = set()
+            try:
+                cue_nums = srt2xml.parse_cues(cue_range)
+                present = [n for n in cue_nums if n in cues_dict]
+                cue_set = set(present)
+                if present:
+                    actual_text = " ".join(cues_dict[n][2] for n in present)
+                    s = min(cues_dict[n][0] for n in present)
+                    e = max(cues_dict[n][1] for n in present)
+                    srt_window = (
+                        f"{int(s//60)}:{s-int(s//60)*60:05.2f}"
+                        f"–{int(e//60)}:{e-int(e//60)*60:05.2f}"
+                    )
+            except Exception:
+                pass
+            cut_cue_sets.append((i, cue_set, b.get("name", ""), cue_range))
             rows.append({
                 "#": i,
                 "鏡位": b.get("cam") or b.get("suggested_cam", "A"),
-                "cues": b.get("cue_range"),
+                "cues": cue_range,
+                "SRT 時間": srt_window,
                 "narrative_role": b.get("narrative_role", ""),
-                "片段名稱": b.get("name", ""),
-                "預估長度(秒)": b.get("estimated_length_seconds", "?"),
+                "實際內容(從 SRT 取出)": actual_text[:80] + ("…" if len(actual_text) > 80 else ""),
             })
+
+        # Overlap detection — any cue number that appears in 2+ cuts will
+        # be played multiple times in the rendered output. Warn explicitly.
+        cue_to_cuts = {}
+        for idx, cue_set, _, _ in cut_cue_sets:
+            for n in cue_set:
+                cue_to_cuts.setdefault(n, []).append(idx)
+        duplicated_cues = {n: cuts for n, cuts in cue_to_cuts.items() if len(cuts) > 1}
+        if duplicated_cues:
+            # Group by which cuts overlap (instead of per-cue spam)
+            pair_to_cues = {}
+            for n, idxs in duplicated_cues.items():
+                key = tuple(sorted(idxs))
+                pair_to_cues.setdefault(key, []).append(n)
+            lines = []
+            for key, ns in sorted(pair_to_cues.items()):
+                ns_sorted = sorted(ns)
+                if len(ns_sorted) > 1 and max(ns_sorted) - min(ns_sorted) == len(ns_sorted) - 1:
+                    n_str = f"{ns_sorted[0]}-{ns_sorted[-1]}"
+                else:
+                    n_str = ",".join(str(n) for n in ns_sorted)
+                lines.append(f"  • cuts **#{'、'.join(f'#{i}' for i in key)}** 都包含 cue `{n_str}`")
+            st.warning(
+                "⚠️ **內容重疊警告**——以下 cut 共用了相同的 cue,"
+                "這幾段內容會在輸出影片中重複播放:\n\n" + "\n".join(lines)
+                + "\n\n如果這不是你要的,回上一步調整 cue 範圍或拿掉重複的 cut。"
+            )
+
+        st.caption("⚠️ **產出 XML 之前請對照「實際內容」這一欄**——這是 SRT 在這些 cue 範圍裡真正的逐字稿,不是 AI 給的標籤。")
         st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         p = st.session_state["chosen_preset"]
