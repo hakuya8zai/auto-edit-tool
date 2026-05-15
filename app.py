@@ -907,12 +907,12 @@ def render_block_builder():
         tag = "🎯" if abs(diff) < 5 else ("⚠️ 超過" if diff > 0 else "ℹ️ 不足")
         diff_text = f" · {tag} 目標 {target_sec:.0f}s,差距 {diff:+.1f}s"
     st.markdown(
-        f"#### 🎬 你的剪輯 · {len(selected_ids)} 段 · ~{total_secs}s{diff_text}"
+        f"##### {len(selected_ids)} 段 · ~{total_secs}s{diff_text}"
     )
 
     st.caption(
-        "拖曳卡片在容器之間移動。最上方「你的剪輯」是橫排,可以左右拖拉換順序。"
-        "下方按「在新影片中扮演的角色」分類,不是原 SRT 的順序。"
+        "拖曳卡片重新排序、跨欄移動。點卡片右側 ▸ 展開細節。"
+        "下方各欄是「在輸出影片中扮演的角色」,不是 SRT 原順序。"
     )
 
     # Build per-role categorization (only blocks NOT in selected_ids)
@@ -965,7 +965,7 @@ def render_block_builder():
         }
 
     containers = [{
-        "header": "🎬 你的剪輯(依故事弧排序,左到右)",
+        "header": "你的剪輯",
         "meta": f"{len(selected_ids)} 段 · ~{total_secs}s",
         "items": [make_item(pool[bid]) for bid in selected_ids if bid in pool],
         "empty_msg": "(從下方分類拖曳卡片到這裡開始組合)",
