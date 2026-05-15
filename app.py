@@ -572,8 +572,12 @@ def render_setup():
                       "可從兩機都看得到的拍手 / 揮手動作目測。",
         )
 
-    a_path = "<<RELINK>>"
-    b_path = "<<RELINK>>"
+    # Distinct placeholders so Premiere's relink dialog treats A and B as
+    # separate missing files. If both are "<<RELINK>>" Premiere sees them
+    # as identical paths and auto-applies the user's first relink choice
+    # to both clips — pointing A and B at the same physical file.
+    a_path = "<<RELINK_A_CAMERA>>"
+    b_path = "<<RELINK_B_CAMERA>>"
 
     st.divider()
 
